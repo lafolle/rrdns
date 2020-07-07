@@ -126,7 +126,7 @@ pub mod model {
     }
 
     #[derive(Debug)]
-    struct DNSQuery {
+    pub struct DNSQuery {
         header: DNSQueryHeaderSection,
         questions: Vec<DNSQuestionQuery>,
         answers: Vec<ResourceRecord>,

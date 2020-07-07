@@ -1,7 +1,7 @@
 // Baby steps
 
 mod business;
-use crate::business::models;
+use crate::business::models::DNSQuery;
 use std::net::UdpSocket;
 
 fn main() {
