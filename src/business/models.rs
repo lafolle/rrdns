@@ -21,8 +21,8 @@ enum OpCode {
 }
 
 // https://tools.ietf.org/html/rfc1035 3.2.2
-#[derive(Debug)]
-enum Type {
+#[derive(Debug, Clone)]
+pub enum Type {
     A(Ipv4Addr),    // Host address. 1
     NS(String),     // Authoritative name server for the domain. 2
     CNAME(String),  // Canonical name of an alias. 5
@@ -36,7 +36,7 @@ enum Type {
 
 // https://tools.ietf.org/html/rfc1035 3.2.3
 #[derive(Debug)]
-enum QType {
+pub enum QType {
     A,     // Host address. 1
     NS,    // Authoritative name server for the domain. 2
     CNAME, // Canonical name of an alias. 5
@@ -71,8 +71,8 @@ impl QType {
     }
 }
 
-#[derive(Debug)]
-enum Class {
+#[derive(Debug, Clone)]
+pub enum Class {
     IN, // 1 the internet
     CH, // 3 the CHAOS class
 }
@@ -96,7 +96,7 @@ enum QClass {
 
 // Business models.
 #[derive(Debug)]
-struct DNSQueryHeaderSection {
+pub struct DNSQueryHeaderSection {
     id: u16, // 2B, [0-15]
 
     // Flags.
@@ -115,19 +115,19 @@ struct DNSQueryHeaderSection {
 }
 
 #[derive(Debug)]
-struct DNSQuestionQuery {
-    qname: String,
+pub struct DNSQuestionQuery {
+    qname: String, // domain.
     qtype: QType,
     qclass: QClass,
 }
 
-#[derive(Debug)]
-struct ResourceRecord {
-    name: String, // owner name to which this record pertains.
-    r#type: Type, // 2 octets
-    class: Class, // 2 octets
-    ttl: u32,     // 4 octets, in seconds, 0 signifies indefinite caching.
-    rd_length: u16,
+#[derive(Debug, Clone)]
+pub struct ResourceRecord {
+    pub name: String,   // owner name to which this record pertains.
+    pub r#type: Type,   // 2 octets
+    pub class: Class,   // 2 octets
+    pub ttl: u32,       // 4 octets, in seconds, 0 signifies indefinite caching.
+    pub rd_length: u16, // TODO: remove pub.
 }
 
 #[derive(Debug)]
@@ -140,8 +140,8 @@ struct DNSQueryResponse {
 
 #[derive(Debug)]
 pub struct DNSQuery {
-    header: DNSQueryHeaderSection,
-    questions: Vec<DNSQuestionQuery>,
+    pub header: DNSQueryHeaderSection,
+    pub questions: Vec<DNSQuestionQuery>,
     answers: Vec<ResourceRecord>,
     authority: Vec<ResourceRecord>,
     additional: Vec<ResourceRecord>,

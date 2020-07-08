@@ -1,17 +1,23 @@
 use crate::business::models::DNSQuery;
 use std::net::UdpSocket;
 
+mod cache;
+use cache::Cache;
+
+// https://tools.ietf.org/html/rfc1034 5
 pub struct Resolver {
     socket: UdpSocket,
+    cache: Cache,
 }
 
 impl Resolver {
     pub fn new() -> Resolver {
-        let resolver_addr = "192.168.0.16:9999";
+        let resolver_addr = "0.0.0.0:9999";
         let resolver_socket =
             UdpSocket::bind(resolver_addr).expect("Failed to bind resolver socket");
         Resolver {
             socket: resolver_socket,
+            cache: Cache::new(),
         }
     }
 
