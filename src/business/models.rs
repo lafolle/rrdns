@@ -21,7 +21,8 @@ enum OpCode {
 }
 
 // https://tools.ietf.org/html/rfc1035 3.2.2
-#[derive(Debug, Clone)]
+// Type is used in Response.
+#[derive(Debug, Clone, PartialEq)]
 pub enum Type {
     A(Ipv4Addr),    // Host address. 1
     NS(String),     // Authoritative name server for the domain. 2
@@ -34,14 +35,31 @@ pub enum Type {
     TXT,            // Text strings
 }
 
+impl Type {
+    pub fn to_qtype(&self) -> QType {
+        match self {
+            Type::A(_) => QType::A,
+            Type::NS(_) => QType::NS,
+            Type::CNAME(_) => QType::CNAME,
+            Type::SOA => QType::SOA,
+            Type::PTR => QType::PTR,
+            Type::HINFO => QType::HINFO,
+            Type::MX => QType::MX,
+            Type::AAAA(_) => QType::AAAA,
+            Type::TXT => QType::TXT,
+        }
+    }
+}
+
 // https://tools.ietf.org/html/rfc1035 3.2.3
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum QType {
     A,     // Host address. 1
     NS,    // Authoritative name server for the domain. 2
     CNAME, // Canonical name of an alias. 5
     SOA,   // Identifies the start of zone of authority. 6
     PTR,   // A pointer to another part of the domain name space. 12
+    HINFO, // Host information. 13
     MX,    // Identifies a mail exchange for domain. 15
     AAAA,  // ipv6 28
     TXT,   // Text strings 16

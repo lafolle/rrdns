@@ -2,12 +2,12 @@ use crate::business::models::DNSQuery;
 use std::net::UdpSocket;
 
 mod cache;
-use cache::Cache;
+use cache::InMemoryCache;
 
 // https://tools.ietf.org/html/rfc1034 5
 pub struct Resolver {
     socket: UdpSocket,
-    cache: Cache,
+    cache: InMemoryCache, // TODO: use "Cache" Trait.
 }
 
 impl Resolver {
@@ -17,7 +17,7 @@ impl Resolver {
             UdpSocket::bind(resolver_addr).expect("Failed to bind resolver socket");
         Resolver {
             socket: resolver_socket,
-            cache: Cache::new(),
+            cache: InMemoryCache::new(),
         }
     }
 
