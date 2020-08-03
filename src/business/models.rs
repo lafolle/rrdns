@@ -1,18 +1,34 @@
+use itertools::interleave;
 use slice_as_array;
+use std::cmp::Eq;
+use std::fmt;
+use std::hash::Hash;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-#[derive(Debug)]
-enum ResponseCode {
-    NoError,
-    FormatError,
-    ServerFailure,
-    NameError,
-    NotImplemented,
-    Refused,
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResponseCode {
+    NoError,     // No error condition, 0
+    FormatError, // Format error - 1
+    // ServerFailure, // Name Error - 3
+    NameError,      // 3
+    NotImplemented, // 4
+    Refused,        // 5
 }
 
-#[derive(Debug)]
-enum OpCode {
+impl ResponseCode {
+    fn to_u8(&self) -> u8 {
+        match *self {
+            ResponseCode::NoError => 0,
+            ResponseCode::FormatError => 1,
+            ResponseCode::NameError => 3,
+            ResponseCode::NotImplemented => 4,
+            ResponseCode::Refused => 5,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum OpCode {
     Query,
     IQuery,
     Status,
@@ -20,39 +36,146 @@ enum OpCode {
     Update,
 }
 
-// https://tools.ietf.org/html/rfc1035 3.2.2
-// Type is used in Response.
 #[derive(Debug, Clone, PartialEq)]
+struct MXData {
+    preference: u16,
+    exchange: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct TXTData {
+    length: u8,
+    data: String,
+}
+
+impl TXTData {
+    // length: u8
+    // data: string of length u8
+    fn serialize(&self) -> Vec<u8> {
+        let mut result = vec![self.length];
+
+        result.append(&mut self.data.as_bytes().to_vec());
+        result
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct SOAData {
+    mname: String,
+    rname: String,
+    serial: u32,
+    refresh_in_secs: u32,
+    retry_in_secs: u32,
+    expire_in_secs: u32,
+    minimum: u32,
+}
+
+impl SOAData {
+    fn serialize(&self) -> Vec<u8> {
+        let mut result: Vec<u8> = vec![];
+
+        let mut mname = write_labels(self.mname.as_str());
+        result.append(&mut mname);
+
+        let mut rname = write_labels(self.rname.as_str());
+        result.append(&mut rname);
+
+        let serial = transform_u32_to_array_of_u8(self.serial);
+        serial
+            .iter()
+            .for_each(|num: &u8| result.append(&mut vec![num.clone()]));
+
+        let refresh_in_secs = transform_u32_to_array_of_u8(self.refresh_in_secs);
+        refresh_in_secs
+            .iter()
+            .for_each(|num: &u8| result.append(&mut vec![num.clone()]));
+
+        let retry_in_secs = transform_u32_to_array_of_u8(self.retry_in_secs);
+        retry_in_secs
+            .iter()
+            .for_each(|num: &u8| result.append(&mut vec![num.clone()]));
+
+        let expire_in_secs = transform_u32_to_array_of_u8(self.expire_in_secs);
+        expire_in_secs
+            .iter()
+            .for_each(|num: &u8| result.append(&mut vec![num.clone()]));
+
+        let minimum = transform_u32_to_array_of_u8(self.minimum);
+        minimum
+            .iter()
+            .for_each(|num: &u8| result.append(&mut vec![num.clone()]));
+
+        result
+    }
+
+    fn deserialize(buf: &[u8], offset: usize, _length: u16) -> Self {
+        let (mname, start_of_rname) = read_labels(buf, offset);
+        let (rname, start_of_serial) = read_labels(buf, start_of_rname);
+        let j = start_of_serial;
+        let serial = convert_slice_to_u32(&buf[j..j + 4]);
+        let refresh_in_secs = convert_slice_to_u32(&buf[j + 4..j + 8]);
+        let retry_in_secs = convert_slice_to_u32(&buf[j + 8..j + 12]);
+        let expire_in_secs = convert_slice_to_u32(&buf[j + 12..j + 16]);
+        let minimum = convert_slice_to_u32(&buf[j + 16..j + 20]);
+        Self {
+            mname,
+            rname,
+            serial,
+            refresh_in_secs,
+            retry_in_secs,
+            expire_in_secs,
+            minimum,
+        }
+    }
+}
+
+// https://tools.ietf.org/html/rfc1035 3.2.2
+// Type is used in ResourceRecords.
+#[derive(Debug, PartialEq, Clone)]
 pub enum Type {
     A(Ipv4Addr),    // Host address. 1
     NS(String),     // Authoritative name server for the domain. 2
     CNAME(String),  // Canonical name of an alias. 5
-    SOA,            // Identifies the start of zone of authority. 6
-    PTR,            // A pointer to another part of the domain name space. 12
+    SOA(SOAData),   // Identifies the start of zone of authority. 6
+    PTR(String),    // A pointer to another part of the domain name space. 12
     HINFO,          // host information, 13
-    MX,             // Identifies a mail exchange for domain. 15
+    MX(MXData),     // Identifies a mail exchange for domain. 15
     AAAA(Ipv6Addr), // ipv6 28
-    TXT,            // Text strings
+    TXT(TXTData),   // Text strings
 }
 
 impl Type {
     pub fn to_qtype(&self) -> QType {
-        match self {
+        match *self {
             Type::A(_) => QType::A,
             Type::NS(_) => QType::NS,
             Type::CNAME(_) => QType::CNAME,
-            Type::SOA => QType::SOA,
-            Type::PTR => QType::PTR,
+            Type::SOA(_) => QType::SOA,
+            Type::PTR(_) => QType::PTR,
             Type::HINFO => QType::HINFO,
-            Type::MX => QType::MX,
+            Type::MX(_) => QType::MX,
             Type::AAAA(_) => QType::AAAA,
-            Type::TXT => QType::TXT,
+            Type::TXT(_) => QType::TXT,
+        }
+    }
+
+    fn to_u16(&self) -> u16 {
+        match *self {
+            Type::A(_) => 1,
+            Type::NS(_) => 2,
+            Type::CNAME(_) => 5,
+            Type::SOA(_) => 6,
+            Type::PTR(_) => 12,
+            Type::HINFO => 13,
+            Type::MX(_) => 15,
+            Type::AAAA(_) => 28,
+            Type::TXT(_) => 16,
         }
     }
 }
 
 // https://tools.ietf.org/html/rfc1035 3.2.3
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy, Hash, Eq)]
 pub enum QType {
     A,     // Host address. 1
     NS,    // Authoritative name server for the domain. 2
@@ -66,136 +189,436 @@ pub enum QType {
     AXFR,  // A request for a transfer of an entier zone. 252
     MAILB, // A request for mailbox-related records (MB, MG or MR). 253
     MAILA, // A request for mail agent RRs (obsolete - see MX). 254
-    STAR,  // (*) A request for all records, 255
+    STAR,  // (*) A request for all records, 255 - TODO: OBSOLETE
+}
+
+struct InvalidTypeError {
+    code: u16,
+}
+
+impl fmt::Display for InvalidTypeError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Invalid type error: {}", self.code)
+    }
+}
+
+impl fmt::Debug for InvalidTypeError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Invalid type error")
+    }
 }
 
 impl QType {
-    fn decimal_to_qtype(value: u16) -> QType {
+    fn decimal_to_qtype(value: u16) -> Result<QType, InvalidTypeError> {
         match value {
-            1 => QType::A,
-            2 => QType::NS,
-            5 => QType::CNAME,
-            6 => QType::SOA,
-            12 => QType::PTR,
-            15 => QType::MX,
-            16 => QType::TXT,
-            28 => QType::AAAA,
-            252 => QType::AXFR,
-            253 => QType::MAILB,
-            254 => QType::MAILA,
-            255 => QType::STAR,
-            _ => QType::STAR,
+            1 => Ok(QType::A),
+            2 => Ok(QType::NS),
+            5 => Ok(QType::CNAME),
+            6 => Ok(QType::SOA),
+            12 => Ok(QType::PTR),
+            15 => Ok(QType::MX),
+            16 => Ok(QType::TXT),
+            28 => Ok(QType::AAAA),
+            252 => Ok(QType::AXFR),
+            253 => Ok(QType::MAILB),
+            254 => Ok(QType::MAILA),
+            255 => Ok(QType::STAR),
+            _ => Err(InvalidTypeError { code: value }),
+        }
+    }
+
+    fn to_u16(&self) -> u16 {
+        match *self {
+            QType::A => 1,
+            QType::NS => 2,
+            QType::CNAME => 5,
+            QType::SOA => 6,
+            QType::PTR => 12,
+            QType::HINFO => 13,
+            QType::MX => 15,
+            QType::TXT => 16,
+            QType::AAAA => 28,
+            QType::AXFR => 252,
+            QType::MAILB => 253,
+            QType::MAILA => 254,
+            QType::STAR => 255,
         }
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Class {
     IN, // 1 the internet
     CH, // 3 the CHAOS class
 }
 
 impl Class {
-    fn to_class(code: u16) -> Class {
-        match code {
-            1 => Class::IN,
-            3 => Class::CH,
-            _ => Class::IN,
+    fn to_u16(&self) -> u16 {
+        match *self {
+            Class::IN => 1,
+            Class::CH => 3,
         }
     }
 }
 
-#[derive(Debug)]
-enum QClass {
+struct InvalidClassError {
+    code: u16,
+}
+
+impl fmt::Display for InvalidClassError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Invalid class error: {}", self.code)
+    }
+}
+impl fmt::Debug for InvalidClassError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Invalid class error: {}", self.code)
+    }
+}
+
+impl Class {
+    fn to_class(code: u16) -> Result<Class, InvalidClassError> {
+        match code {
+            1 => Ok(Class::IN),
+            3 => Ok(Class::CH),
+            _ => Err(InvalidClassError { code }),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum QClass {
     IN,   // Internet system
     CH,   // Chaos system
     STAR, // Any class
 }
 
+impl QClass {
+    fn to_u16(&self) -> u16 {
+        match *self {
+            QClass::IN => 1,
+            QClass::CH => 2, // ???
+            QClass::STAR => 255,
+        }
+    }
+}
+
 // Business models.
-#[derive(Debug)]
-pub struct DNSQueryHeaderSection {
-    id: u16, // 2B, [0-15]
 
-    // Flags.
-    is_query: bool,                // 1b, 16
-    op_code: OpCode,               // 4b, [17-20]
-    is_authoritative_answer: bool, // 1b, 21
-    is_truncated: bool,            // 1b, 22
-    is_recursion_desired: bool,    // 1b, 23
-    is_recursion_available: bool,  // 1b, 24
-    response_code: ResponseCode,   // 4b, [28-31]
-
-    questions_count: u16,     // 2B, [32-47]
-    answers_count: u16,       // 2B, [48-63]
-    ns_rr_count: u16,         // 2B, [64-79]
-    additional_rr_count: u16, // 2B, [80-95]
-}
-
-#[derive(Debug)]
-pub struct DNSQuestionQuery {
-    qname: String, // domain.
-    qtype: QType,
-    qclass: QClass,
-}
+// Represents list of RR of same type and class.
+pub type RRSet = Vec<ResourceRecord>;
 
 #[derive(Debug, Clone)]
 pub struct ResourceRecord {
     pub name: String,   // owner name to which this record pertains.
-    pub r#type: Type,   // 2 octets
+    pub r#type: Type,   // 2 octets, data will be inside Type enum.
     pub class: Class,   // 2 octets
     pub ttl: u32,       // 4 octets, in seconds, 0 signifies indefinite caching.
     pub rd_length: u16, // TODO: remove pub.
 }
 
-#[derive(Debug)]
-struct DNSQueryResponse {
-    dns_query: DNSQuery,
-    answers: Vec<ResourceRecord>,
-    authority: Vec<ResourceRecord>,
-    additional: Vec<ResourceRecord>,
+impl ResourceRecord {
+    fn serialize(&self) -> Vec<u8> {
+        let serialized_name = write_labels(&self.name);
+
+        let mut serialized_type = Vec::with_capacity(2);
+        serialized_type.push(((self.r#type.to_u16() >> 8) & 0xff) as u8);
+        serialized_type.push((self.r#type.to_u16() & 0xff) as u8);
+
+        let serialized_rdata = match &self.r#type {
+            Type::A(ipv4) => ipv4.octets().to_vec(),
+            Type::AAAA(ipv6) => ipv6.octets().to_vec(),
+            Type::NS(ns) => write_labels(&ns),
+            Type::TXT(txt_data) => txt_data.serialize(),
+            Type::CNAME(cname) => write_labels(cname),
+            Type::SOA(soa) => soa.serialize(),
+            _ => panic!(
+                "ResourceRecord:serialize type not supported: {:#?}",
+                &self.r#type
+            ),
+        };
+
+        let mut serialized_class = Vec::with_capacity(2);
+        serialized_class.push(((self.class.to_u16() >> 8) & 0xff) as u8);
+        serialized_class.push((self.class.to_u16() & 0xff) as u8);
+
+        let mut serialized_ttl = Vec::with_capacity(4);
+        serialized_ttl.push(((self.ttl >> 24) & 0xff) as u8);
+        serialized_ttl.push(((self.ttl >> 16) & 0xff) as u8);
+        serialized_ttl.push(((self.ttl >> 8) & 0xff) as u8);
+        serialized_ttl.push((self.ttl & 0xff) as u8);
+
+        let mut serialized_rd_length = Vec::with_capacity(2);
+        // TODO: implement compression of labels.
+        let uncompressed_rd_length = serialized_rdata.len();
+        serialized_rd_length.push(((uncompressed_rd_length >> 8) & 0xff) as u8);
+        serialized_rd_length.push((uncompressed_rd_length & 0xff) as u8);
+
+        itertools::concat(vec![
+            serialized_name,
+            serialized_type,
+            serialized_class,
+            serialized_ttl,
+            serialized_rd_length,
+            serialized_rdata,
+        ])
+    }
 }
 
-#[derive(Debug)]
-pub struct DNSQuery {
-    pub header: DNSQueryHeaderSection,
-    pub questions: Vec<DNSQuestionQuery>,
-    answers: Vec<ResourceRecord>,
-    authority: Vec<ResourceRecord>,
-    additional: Vec<ResourceRecord>,
-
-    pub buf: Vec<u8>,
+impl PartialEq for ResourceRecord {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.r#type == other.r#type && self.class == other.class
+    }
 }
 
-impl DNSQuery {
-    pub fn transform_to_wire_format(buf: &[u8]) -> DNSQuery {
-        let header_section = DNSQuery::parse_header_section(buf);
+#[derive(Debug, Clone)]
+pub struct DNSQueryResponse {
+    pub query: DNSQuery,
+    pub answers: Vec<ResourceRecord>,
+    pub authority: Vec<ResourceRecord>,
+    pub additional: Vec<ResourceRecord>,
+}
 
-        let (question_section, offset) =
-            DNSQuery::parse_question_section(buf, header_section.questions_count);
+impl DNSQueryResponse {
+    pub fn serialize(&self) -> Vec<u8> {
+        let query = self.query.serialize();
+        let answers = self.serialize_resource_records(&self.answers);
+        let authority = self.serialize_resource_records(&self.authority);
+        let additional = self.serialize_resource_records(&self.additional);
+        itertools::concat(vec![query, answers, authority, additional])
+    }
+
+    fn serialize_resource_records(&self, resource_records: &Vec<ResourceRecord>) -> Vec<u8> {
+        let serialized_rrs = resource_records
+            .iter()
+            .map(|rr| rr.serialize())
+            .collect::<Vec<Vec<u8>>>();
+        itertools::concat(serialized_rrs)
+    }
+
+    pub fn deserialize(data: &[u8]) -> DNSQueryResponse {
+        let (query, answer_section_offset) = DNSQuery::deserialize(data);
 
         // Read answers.
-        let (answer_section, offset) =
-            DNSQuery::parse_resource_records(buf, offset, header_section.answers_count);
+        let (answer_section, authority_section_offset) = DNSQuery::deserialize_resource_records(
+            data,
+            answer_section_offset,
+            query.header.answers_count,
+        );
 
-        let (authority_section, offset) =
-            DNSQuery::parse_resource_records(buf, offset, header_section.ns_rr_count);
+        // Read authority.
+        let (authority_section, additional_section_offset) = DNSQuery::deserialize_resource_records(
+            data,
+            authority_section_offset,
+            query.header.ns_rr_count,
+        );
 
-        let (additional_section, _) =
-            DNSQuery::parse_resource_records(buf, offset, header_section.additional_rr_count);
+        // Read additional.
+        let (additional_section, _) = DNSQuery::deserialize_resource_records(
+            data,
+            additional_section_offset,
+            query.header.additional_rr_count,
+        );
 
-        DNSQuery {
-            header: header_section,
-            questions: question_section,
+        DNSQueryResponse {
+            query,
             answers: answer_section,
             authority: authority_section,
             additional: additional_section,
-            buf: buf.iter().cloned().collect(),
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DNSQueryHeaderSection {
+    pub id: u16, // 2B, [0-15]
+
+    // Flags.
+    pub is_query: bool,                // 1b, 16
+    pub op_code: OpCode,               // 4b, [17-20]
+    pub is_authoritative_answer: bool, // 1b, 21
+    pub is_truncated: bool,            // 1b, 22
+    pub is_recursion_desired: bool,    // 1b, 23
+    pub is_recursion_available: bool,  // 1b, 24
+    pub response_code: ResponseCode,   // 4b, [28-31]
+
+    pub questions_count: u16,     // 2B, [32-47]
+    pub answers_count: u16,       // 2B, [48-63]
+    pub ns_rr_count: u16,         // 2B, [64-79]
+    pub additional_rr_count: u16, // 2B, [80-95]
+}
+
+impl DNSQueryHeaderSection {
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut result = vec![];
+
+        // id
+        result.push(((self.id >> 8) & 0xff) as u8);
+        result.push((self.id & 0xff) as u8);
+
+        // flags
+        let mut flags_first_byte: u8 = 0;
+
+        // is_query = 0,1
+        flags_first_byte = if !self.is_query {
+            flags_first_byte ^ 0b10000000
+        } else {
+            flags_first_byte
+        };
+
+        // is_authoritative_answer = 5, 6
+        flags_first_byte = if self.is_authoritative_answer {
+            flags_first_byte ^ 0b00000100
+        } else {
+            flags_first_byte
+        };
+        // is_truncated = false/0 true/1 0 for now, 6,7
+
+        // is_recursion_desired - 7,8
+        flags_first_byte = if self.is_recursion_desired {
+            flags_first_byte ^ 0b00000001
+        } else {
+            flags_first_byte
+        };
+        result.push(flags_first_byte);
+
+        let mut flags_second_byte: u8 = 0;
+        // is_recursion_available 0,1
+        flags_second_byte = if self.is_recursion_available {
+            flags_second_byte ^ 0b10000000
+        } else {
+            flags_second_byte
+        };
+
+        // response_code 4,8 [4,5,6,7]
+        flags_second_byte = flags_second_byte ^ self.response_code.to_u8();
+        result.push(flags_second_byte);
+
+        // questions_count
+        result.push(((self.questions_count >> 8) & 0xff) as u8);
+        result.push((self.questions_count & 0xff) as u8);
+
+        // answers_count
+        result.push(((self.answers_count >> 8) & 0xff) as u8);
+        result.push((self.answers_count & 0xff) as u8);
+
+        // ns_rr_count
+        result.push(((self.ns_rr_count >> 8) & 0xff) as u8);
+        result.push((self.ns_rr_count & 0xff) as u8);
+
+        // additional_rr_count
+        result.push(((self.additional_rr_count >> 8) & 0xff) as u8);
+        result.push((self.additional_rr_count & 0xff) as u8);
+
+        result
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DNSQuestionQuery {
+    pub qname: String, // domain.
+    pub qtype: QType,
+    pub qclass: QClass,
+}
+
+impl DNSQuestionQuery {
+    fn serialize(&self) -> Vec<u8> {
+        let mut result = vec![];
+
+        // qname
+        let mut labels = self.serialize_domain(&self.qname);
+        result.append(&mut labels);
+
+        // qtype
+        let qtype = self.qtype.to_u16();
+        result.push(((qtype >> 8) & 0xff) as u8);
+        result.push((qtype & 0xff) as u8);
+
+        // qclass
+        let qclass = self.qclass.to_u16();
+        result.push(((qclass >> 8) & 0xff) as u8);
+        result.push((qclass & 0xff) as u8);
+
+        result
+    }
+
+    // domain = www.google.com
+    // domain is split into "labels".
+    // "labels"s' length is "label_lengths".
+    // "label_lengths" and "labels" constitute of "label_part"s.
+    // 3 | w | w | w | 6 | g | o | o | g | l | e | 3 | c | o | m | 0
+    fn serialize_domain(&self, domain: &String) -> Vec<u8> {
+        if domain == "." {
+            return vec![0];
+        }
+        let labels: Vec<String> = domain
+            .split('.')
+            .filter(|x| x.len() > 0)
+            .map(|label| label.to_string())
+            .collect();
+        let label_lengths: Vec<String> = domain
+            .split('.')
+            .filter(|x| x.len() > 0)
+            .map(|label| label.len().to_string())
+            .collect();
+        let mut result = interleave(label_lengths, labels)
+            .enumerate()
+            .flat_map(|(i, val)| {
+                if i % 2 == 0 {
+                    return vec![val.parse::<u8>().unwrap()];
+                }
+                val.as_bytes().to_owned()
+            })
+            .collect::<Vec<u8>>();
+        result.append(&mut vec![0]);
+        result
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DNSQuery {
+    pub header: DNSQueryHeaderSection,
+    // Number of questions will always be one.
+    pub questions: Vec<DNSQuestionQuery>,
+    pub additionals: Vec<ResourceRecord>,
+}
+
+impl DNSQuery {
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut result = vec![];
+
+        let mut serialized_header = self.header.serialize();
+        result.append(&mut serialized_header);
+        let mut serialized_questions = self
+            .questions
+            .iter()
+            .flat_map(|question| question.serialize())
+            .collect::<Vec<u8>>();
+        result.append(&mut serialized_questions);
+
+        result
+    }
+
+    pub fn deserialize(buf: &[u8]) -> (DNSQuery, usize) {
+        let header_section = DNSQuery::deserialize_header_section(buf);
+
+        let (question_section, offset) =
+            DNSQuery::deserialize_question_section(buf, header_section.questions_count);
+        // let (additional_section, _) =
+        //     DNSQuery::parse_resource_records(buf, offset, header_section.additional_rr_count);
+
+        (
+            Self {
+                header: header_section,
+                questions: question_section,
+                additionals: vec![],
+            },
+            offset,
+        )
     }
 
     // https://tools.ietf.org/html/rfc1035 Section 4.1.1
-    fn parse_header_section(buf: &[u8]) -> DNSQueryHeaderSection {
+    fn deserialize_header_section(buf: &[u8]) -> DNSQueryHeaderSection {
         let id_array = slice_as_array!(&buf[..2], [u8; 2]).expect("bad slice length");
         let id = u16::from_be_bytes(*id_array);
         let is_query = !is_ith_bit_set(buf, 16);
@@ -225,7 +648,10 @@ impl DNSQuery {
         }
     }
 
-    fn parse_question_section(buf: &[u8], questions_count: u16) -> (Vec<DNSQuestionQuery>, usize) {
+    fn deserialize_question_section(
+        buf: &[u8],
+        questions_count: u16,
+    ) -> (Vec<DNSQuestionQuery>, usize) {
         let mut queries = Vec::new();
         let mut index = 96 / 8;
         for _ in 0..questions_count {
@@ -233,6 +659,9 @@ impl DNSQuery {
             loop {
                 let octet_length = buf[index];
                 if octet_length == 0 {
+                    if index == 96 / 8 {
+                        labels.push(".");
+                    }
                     break;
                 }
                 let label_bytes = &buf[index + 1..index + 1 + octet_length as usize];
@@ -243,7 +672,7 @@ impl DNSQuery {
             let qtype_u16 = convert_slice_to_u16(&buf[index + 1..index + 3]);
             let query = DNSQuestionQuery {
                 qname: String::from(labels.join(".")),
-                qtype: QType::decimal_to_qtype(qtype_u16),
+                qtype: QType::decimal_to_qtype(qtype_u16).unwrap(),
                 qclass: QClass::IN,
             };
             queries.push(query);
@@ -255,43 +684,36 @@ impl DNSQuery {
         (queries, index)
     }
 
-    fn parse_resource_records(
+    fn deserialize_resource_records(
         buf: &[u8],
         mut index: usize,
-        rr_count: u16,
+        records_count: u16,
     ) -> (Vec<ResourceRecord>, usize) {
-        if rr_count == 0 {
+        if records_count == 0 {
             return (vec![], index);
         }
 
-        let mut answers = Vec::new();
+        let mut records = Vec::with_capacity(records_count as usize);
 
         // parse name.
-        println!(
-            "index={} buf.len={} rr_count={}",
-            index,
-            buf.len(),
-            rr_count
-        );
-        for _ in 0..rr_count {
+        for _ in 0..records_count {
             // parse name
-
             let (name, updated_index) = read_labels(&buf, index);
             index = updated_index;
 
-            // parse type.
+            // type.
             let type_code: u16 = convert_slice_to_u16(&buf[index..index + 2]);
             index += 2;
 
-            // parse class.
+            // class.
             let class_code: u16 = convert_slice_to_u16(&buf[index..index + 2]);
             index += 2;
 
-            // parse ttl.
+            // ttl.
             let ttl: u32 = convert_slice_to_u32(&buf[index..index + 4]);
             index += 4;
 
-            // parse rdlength
+            // rdlength
             let rd_length: u16 = convert_slice_to_u16(&buf[index..index + 2]);
             index += 2;
 
@@ -311,10 +733,19 @@ impl DNSQuery {
                     let (cname, _) = read_labels(buf, index);
                     Type::CNAME(cname)
                 }
-                6 => Type::SOA,
-                12 => Type::PTR,
-                15 => Type::MX,
-                16 => Type::TXT,
+                6 => {
+                    let data = SOAData::deserialize(buf, index, rd_length);
+                    Type::SOA(data)
+                }
+                12 => {
+                    let (ptr_dname, _) = read_labels(buf, index);
+                    Type::PTR(ptr_dname)
+                }
+                // 15 => Type::MX,
+                16 => Type::TXT(TXTData {
+                    length: rd_length as u8 - 1,
+                    data: read_txt(&rd_data[1..]),
+                }),
                 28 => {
                     let ipv6_addr = Ipv6Addr::new(
                         convert_slice_to_u16(&rd_data[0..2]),
@@ -328,27 +759,60 @@ impl DNSQuery {
                     );
                     Type::AAAA(ipv6_addr)
                 }
-                _ => Type::TXT,
+                _ => panic!("deserialize: type code not supported: "),
             };
-
             let answer = ResourceRecord {
                 name,
                 r#type: type_with_data,
-                class: Class::to_class(class_code),
+                class: Class::to_class(class_code).unwrap(),
                 ttl,
                 rd_length,
             };
-            answers.push(answer);
+            records.push(answer);
             index += rd_length as usize;
         }
 
-        (answers, index)
+        (records, index)
     }
+}
+
+fn read_txt(buf: &[u8]) -> String {
+    String::from(std::str::from_utf8(buf).unwrap())
+}
+
+fn write_labels(domain: &str) -> Vec<u8> {
+    if domain == "." {
+        return vec![0];
+    }
+    let labels: Vec<String> = domain
+        .split('.')
+        .filter(|x| x.len() > 0)
+        .map(|label| label.to_string())
+        .collect();
+    let label_lengths: Vec<String> = domain
+        .split('.')
+        .filter(|x| x.len() > 0)
+        .map(|label| label.len().to_string())
+        .collect();
+    let mut result = interleave(label_lengths, labels)
+        .enumerate()
+        .flat_map(|(i, val)| {
+            if i % 2 == 0 {
+                return vec![val.parse::<u8>().unwrap()];
+            }
+            val.as_bytes().to_owned()
+        })
+        .collect::<Vec<u8>>();
+    result.append(&mut vec![0]);
+    result
 }
 
 fn read_labels(buf: &[u8], offset: usize) -> (String, usize) {
     let mut index = offset;
     let mut labels = Vec::new();
+    if buf[index] == 0 {
+        return (".".to_string(), index + 1);
+    }
     loop {
         let octet_length = buf[index];
         if octet_length & 0xC0 == 0xC0 {
@@ -369,14 +833,12 @@ fn read_labels(buf: &[u8], offset: usize) -> (String, usize) {
     }
     (labels.join("."), index + 1)
 }
-
 fn get_response_code(buf: &[u8]) -> ResponseCode {
     let index_in_buf: usize = 28 / 8;
     let response_code = buf[index_in_buf] & 15;
     match response_code {
         0 => ResponseCode::NoError,
         1 => ResponseCode::FormatError,
-        2 => ResponseCode::ServerFailure,
         3 => ResponseCode::NameError,
         4 => ResponseCode::NotImplemented,
         5 => ResponseCode::Refused,
@@ -434,9 +896,175 @@ fn convert_slice_to_u32(slice: &[u8]) -> u32 {
     u32::from_be_bytes(*slice_as_array)
 }
 
+fn transform_u32_to_array_of_u8(x: u32) -> [u8; 4] {
+    // https://bit.ly/3k7Cxv1
+    let b1: u8 = ((x >> 24) & 0xff) as u8;
+    let b2: u8 = ((x >> 16) & 0xff) as u8;
+    let b3: u8 = ((x >> 8) & 0xff) as u8;
+    let b4: u8 = (x & 0xff) as u8;
+
+    [b1, b2, b3, b4]
+}
+
 // Assumes i < len(buf) * 8.
 fn is_ith_bit_set(buf: &[u8], i: usize) -> bool {
     let index_in_buf: usize = i / 8;
     let index_in_byte: usize = i % 8;
     (buf[index_in_buf] & (1 << (7 - index_in_byte))) != 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        DNSQueryHeaderSection, DNSQuestionQuery, OpCode, QClass, QType, ResponseCode, SOAData,
+    };
+    #[test]
+    fn DNSQueryHeaderSection_serialize_id() {
+        // Arrange
+        let header_section = DNSQueryHeaderSection {
+            id: 22015, // TODO: Generate a random number.
+
+            // Flags.
+            is_query: true,
+            op_code: OpCode::Query,
+            is_authoritative_answer: false,
+            is_truncated: false,
+            is_recursion_desired: true,
+            is_recursion_available: false,
+            response_code: ResponseCode::NoError,
+            questions_count: 1,
+            answers_count: 0,
+            ns_rr_count: 0,
+            additional_rr_count: 0,
+        };
+        let expected = [85, 255];
+
+        // Act
+        let actual = header_section.serialize();
+
+        // Assert
+        assert_eq!(expected[0], actual[0]);
+        assert_eq!(expected[1], actual[1]);
+    }
+
+    #[test]
+    fn DNSQuestionQuery_serialize() {
+        // Arrange
+        let query = DNSQuestionQuery {
+            qname: "www.google.com".to_string(),
+            qtype: QType::A,
+            qclass: QClass::IN,
+        };
+        // 3 | w | w | w | 6 | g | o | o | g | l | e | 3 | c | o | m | 0
+        let expected: Vec<u8> = vec![
+            3, 119, 119, 119, 6, 103, 111, 111, 103, 108, 101, 3, 99, 111, 109, // labels
+            1,   // A
+            1,   // IN
+        ];
+
+        // Act
+        let actual = query.serialize();
+
+        // Assert
+        assert_eq!(expected.len(), actual.len());
+        for i in 0..expected.len() {
+            assert_eq!(expected[i], actual[i]);
+        }
+    }
+
+    #[test]
+    fn DNSQuestionQuery_serialize_root_domain() {
+        // Arrange
+        let query = DNSQuestionQuery {
+            qname: ".".to_string(),
+            qtype: QType::NS,
+            qclass: QClass::IN,
+        };
+        let expected: Vec<u8> = vec![
+            0, //
+            2, // NS
+            1, // IN
+        ];
+
+        // Act
+        let actual = query.serialize();
+
+        // Assert
+        assert_eq!(expected.len(), actual.len());
+        for i in 0..expected.len() {
+            assert_eq!(expected[i], actual[i]);
+        }
+    }
+
+    #[test]
+    fn DNSQuestionQuery_serialize_leading_dot() {
+        // Arrange
+        let query = DNSQuestionQuery {
+            qname: "www.google.com.".to_string(),
+            qtype: QType::NS,
+            qclass: QClass::IN,
+        };
+        let expected: Vec<u8> = vec![
+            3, 119, 119, 119, 6, 103, 111, 111, 103, 108, 101, 3, 99, 111, 109, // labels
+            2,   // NS
+            1,   // IN
+        ];
+
+        // Act
+        let actual = query.serialize();
+
+        // Assert
+        assert_eq!(expected.len(), actual.len());
+        for i in 0..expected.len() {
+            assert_eq!(expected[i], actual[i]);
+        }
+    }
+
+    #[test]
+    fn soa_data_serialize() {
+        // Arrange
+        let soa = SOAData {
+            rname: "lafolle.ca".to_string(),
+            mname: "lafolle.ca".to_string(),
+            serial: 0,
+            refresh_in_secs: 1,
+            retry_in_secs: 2,
+            expire_in_secs: 3,
+            minimum: 200,
+        };
+        let expected = vec![
+            7, 108, 97, 102, 111, 108, 108, 101, 2, 99, 97, 0, 7, 108, 97, 102, 111, 108, 108, 101,
+            2, 99, 97, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 200,
+        ];
+
+        // Act
+        let actual = soa.serialize();
+
+        // Assert
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn soa_data_deserialize() {
+        // Arrange
+        let raw = vec![
+            7, 108, 97, 102, 111, 108, 108, 101, 2, 99, 97, 0, 7, 108, 97, 102, 111, 108, 108, 101,
+            2, 99, 97, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 200,
+        ];
+        let expected = SOAData {
+            rname: "lafolle.ca".to_string(),
+            mname: "lafolle.ca".to_string(),
+            serial: 0,
+            refresh_in_secs: 1,
+            retry_in_secs: 2,
+            expire_in_secs: 3,
+            minimum: 200,
+        };
+ 
+        // Act
+        let actual = SOAData::deserialize(&raw, 0, raw.len() as u16);
+
+        // Assert
+        assert_eq!(expected, actual);
+    }
 }

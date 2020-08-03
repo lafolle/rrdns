@@ -8,3 +8,7 @@ edition = "2018"
 
 [dependencies]
 slice_as_array = { version = "1.1.0", default-features = false }
+itertools = { version = "0.9.0" }
+rand = "0.7.3"
+tokio = { version = "0.2.22", features = ["udp"] }
+md5 = "0.7.0"

@@ -1,21 +1,8 @@
 use crate::business::models::{Class, QType, ResourceRecord, Type};
+use md5;
 use std::collections::HashMap;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-/*
-. => [ResourceRecord{type: NS}, ResourceRecord{type: A}, ResourceRecord{type: AAAA}]
-.com => [ResourceRecord]
-.com.google => [ResourceRecord{}, ResourceRecord{}, ResourceRecord{}]
-.com.google.people => []
-*/
-
-pub trait Cache {
-    // get takes a mutable reference because it can trigger cleaning up of expired
-    // records in cache.
-    fn get(&mut self, domain: &str, resource_type: QType) -> Option<Vec<ResourceRecord>>;
-    fn insert(&mut self, domain: &str, resource_records: Vec<ResourceRecord>);
-}
 
 #[derive(Debug)]
 struct CachedResourceRecord {
@@ -32,22 +19,123 @@ impl CachedResourceRecord {
     }
 }
 
+type CRRSet = Vec<CachedResourceRecord>;
+
 pub struct InMemoryCache {
-    store: HashMap<String, Vec<CachedResourceRecord>>,
+    store: HashMap<String, HashMap<QType, CRRSet>>,
 }
 
 impl InMemoryCache {
     pub fn new() -> InMemoryCache {
         let root_rrs: Vec<CachedResourceRecord> = InMemoryCache::load_root_name_servers();
+
         let mut store = HashMap::new();
-        store.insert(".".to_string(), root_rrs);
+        for crr in root_rrs.into_iter() {
+            let owner = &crr.rr.name.to_lowercase();
+            let qtype = crr.rr.r#type.to_qtype();
+
+            let type_map = store.entry(owner.clone()).or_insert_with(HashMap::new);
+            type_map.entry(qtype).or_insert_with(Vec::new).push(crr);
+        }
+
+        println!("InMemoryCache: {:#?}", store);
+
         InMemoryCache { store }
     }
 
-    fn load_root_name_servers() -> Vec<CachedResourceRecord> {
+    pub fn get(&mut self, domain: &str, qtype: &QType) -> Option<Vec<ResourceRecord>> {
+        if let Some(owner) = self.store.get(domain) {
+            if let Some(cached_rrs) = owner.get(qtype) {
+                // TODO: remove expired entries.
+                let result: Vec<ResourceRecord> = cached_rrs
+                    .iter()
+                    .filter_map(|crr| {
+                        if crr.is_expired() {
+                            None
+                        } else {
+                            Some(crr.rr.clone())
+                        }
+                    })
+                    .collect();
+                if result.len() == 0 {
+                    return None;
+                }
+                return Some(result);
+            }
+        }
+
+        None
+    }
+
+    pub fn insert2(&mut self, resource_record: &ResourceRecord) {
+        let domain = if !resource_record.name.ends_with('.') {
+            format!("{}.", resource_record.name)
+        } else {
+            resource_record.name.clone()
+        };
+        let qtype = resource_record.r#type.to_qtype();
+
+        let qmap = self
+            .store
+            .entry(domain.clone())
+            .or_insert_with(HashMap::new);
+
+        let cached_rrs = qmap.entry(qtype).or_insert_with(Vec::new);
+
+        // ignore if duplicate.
+        if cached_rrs
+            .iter()
+            .find(|crr| crr.rr.name == *domain && crr.rr.r#type.to_qtype() == qtype)
+            .is_none()
+        {
+            cached_rrs.append(&mut vec![CachedResourceRecord {
+                rr: resource_record.clone(),
+                last_refreshed_at: get_secs_since_epoch(),
+            }]);
+        }
+    }
+
+    pub fn insert(&mut self, domain: &str, qtype: &QType, resource_records: Vec<ResourceRecord>) {
+        let qmap = self
+            .store
+            .entry(domain.to_string())
+            .or_insert_with(HashMap::new);
+        let cached_rrs = qmap.entry(*qtype).or_insert_with(Vec::new);
+        let mut new_crrs = resource_records
+            .iter()
+            .filter_map(|rr| {
+                // De-duplicate.
+                for crr in cached_rrs.iter() {
+                    if crr.rr.name == rr.name && crr.rr.r#type.to_qtype() == rr.r#type.to_qtype() {
+                        return None;
+                    }
+                }
+
+                Some(CachedResourceRecord {
+                    rr: rr.clone(),
+                    last_refreshed_at: get_secs_since_epoch(),
+                })
+            })
+            .collect::<Vec<CachedResourceRecord>>();
+        cached_rrs.append(&mut new_crrs);
+    }
+
+    fn check_root_file_integrity() -> String {
+        let _md5_checksum = "f1064901cf83007da847022e247ab2e7";
         const ROOT_NS_FILE_PATH: &str = "src/resolver/named.root";
         let contents =
             fs::read_to_string(ROOT_NS_FILE_PATH).expect("Failed to load named.root file.");
+
+        // https://docs.rs/md5/0.7.0/md5/struct.Digest.html
+        // TODO: Compare checksums.
+        let _digest = md5::compute(&contents);
+
+        contents.clone()
+    }
+
+    fn load_root_name_servers() -> Vec<CachedResourceRecord> {
+        let contents = InMemoryCache::check_root_file_integrity();
+
         let root_rrs: Vec<CachedResourceRecord> = contents
             .split('\n')
             .filter_map(|line| -> Option<CachedResourceRecord> {
@@ -55,189 +143,221 @@ impl InMemoryCache {
                 if line.starts_with(';') {
                     return None;
                 }
-                let mut parts = line.split_whitespace();
-                if line.starts_with('.') {
-                    // .                        3600000      NS    A.ROOT-SERVERS.NET.
-                    parts.next(); // Ignore .
-                    let ttl: u32 = parts.next().unwrap().to_string().parse::<u32>().unwrap();
-                    parts.next(); // Ignore NS
-                    let name: String = parts.next().unwrap().to_string();
-                    let r#type: Type = Type::NS(name.clone());
-                    return Some(CachedResourceRecord {
-                        rr: ResourceRecord {
-                            name: ".".to_string(),
-                            r#type,
-                            class: Class::IN,
-                            ttl,
-                            rd_length: 0,
-                        },
-                        last_refreshed_at: get_secs_since_epoch(),
-                    });
-                }
 
-                let name: String = parts.next().unwrap().to_string();
-                let ttl: u32 = parts.next().unwrap().to_string().parse::<u32>().unwrap();
-                parts.next(); // Ignore A and AAAA
-                let r#type: Type;
-                let ip: String = parts.next().unwrap().to_string();
-                if line.contains("AAAA") {
-                    // A.ROOT-SERVERS.NET.      3600000      AAAA  2001:503:ba3e::2:30
-                    r#type = Type::AAAA(ip.parse().unwrap());
-                } else {
-                    // A.ROOT-SERVERS.NET.      3600000      A     198.41.0.4
-                    r#type = Type::A(ip.parse().unwrap());
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                match parts[..] {
+                    [name, ttl, rtype, value] if rtype == "NS" => {
+                        let ttl: u32 = ttl.to_string().parse().unwrap();
+                        Some(CachedResourceRecord {
+                            rr: ResourceRecord {
+                                name: name.to_string().to_lowercase(),
+                                r#type: Type::NS(value.to_string().to_lowercase()),
+                                class: Class::IN,
+                                ttl,
+                                rd_length: compute_label_length(value),
+                            },
+                            last_refreshed_at: get_secs_since_epoch(),
+                        })
+                    }
+                    [name, ttl, rtype, value] if rtype == "A" => {
+                        let ttl: u32 = ttl.to_string().parse().unwrap();
+                        Some(CachedResourceRecord {
+                            rr: ResourceRecord {
+                                name: name.to_string().to_lowercase(),
+                                r#type: Type::A(value.parse().unwrap()),
+                                class: Class::IN,
+                                ttl,
+                                rd_length: 4,
+                            },
+                            last_refreshed_at: get_secs_since_epoch(),
+                        })
+                    }
+                    [name, ttl, rtype, value] if rtype == "AAAA" => {
+                        let ttl: u32 = ttl.to_string().parse().unwrap();
+                        Some(CachedResourceRecord {
+                            rr: ResourceRecord {
+                                name: name.to_string().to_lowercase(),
+                                r#type: Type::AAAA(value.parse().unwrap()),
+                                class: Class::IN,
+                                ttl,
+                                rd_length: 16,
+                            },
+                            last_refreshed_at: get_secs_since_epoch(),
+                        })
+                    }
+                    _ => panic!("Root name servers in invalid format."),
                 }
-
-                Some(CachedResourceRecord {
-                    rr: ResourceRecord {
-                        name,
-                        r#type,
-                        class: Class::IN,
-                        ttl,
-                        rd_length: 0,
-                    },
-                    last_refreshed_at: get_secs_since_epoch(),
-                })
             })
             .collect();
-
         root_rrs
     }
 }
 
-impl Cache for InMemoryCache {
-    fn get(&mut self, domain: &str, resource_type: QType) -> Option<Vec<ResourceRecord>> {
-        match self.store.get_mut(domain) {
-            Some(cached_rrs) => {
-                cached_rrs.retain(|cached_rr| !cached_rr.is_expired());
-                if cached_rrs.len() == 0 {
-                    return None;
-                }
-                Some(
-                    cached_rrs
-                        .iter()
-                        .filter_map(
-                            |cached_rr: &CachedResourceRecord| -> Option<ResourceRecord> {
-                                if cached_rr.rr.r#type.to_qtype() != resource_type
-                                    && resource_type != QType::STAR
-                                {
-                                    return None;
-                                }
-                                Some(cached_rr.rr.clone())
-                            },
-                        )
-                        .collect::<Vec<ResourceRecord>>(),
-                )
-            }
-            None => None,
-        }
+/*
+ * label = www.google.com
+ * encoding = 3 | w | w | w | 6 | g | o | o | g | l | e | 3 | c | o | m.
+ * rd_length = len(parts[0]) + len(parts[1]) ... + len(parts[n]) + n
+ */
+fn compute_label_length(label: &str) -> u16 {
+    if label == "." {
+        return 0;
     }
-
-    // Do not insert if non-expired record is already present.
-    fn insert(&mut self, domain: &str, resource_records: Vec<ResourceRecord>) {
-        let cached_rrs: Vec<CachedResourceRecord> = resource_records
-            .iter()
-            .map(|rr| CachedResourceRecord {
-                rr: rr.clone(),
-                last_refreshed_at: get_secs_since_epoch(),
-            })
-            .collect();
-        self.store.insert(domain.to_string(), cached_rrs);
-    }
+    label.split('.').fold(0, |acc, part| acc + part.len() + 1) as u16
 }
 
 fn get_secs_since_epoch() -> u32 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .expect("time went backwords")
+        .expect("time went backwards")
         .as_secs() as u32
 }
 
 #[cfg(test)]
 mod tests {
 
-    use super::{Cache, CachedResourceRecord, InMemoryCache, ResourceRecord};
+    use super::{
+        compute_label_length, get_secs_since_epoch, CachedResourceRecord, InMemoryCache,
+        ResourceRecord,
+    };
     use crate::business::models::{Class, QType, Type};
     use std::net::Ipv4Addr;
 
     #[test]
-    fn new_cache_with_root_ns_filter_a_records() {
+    fn test_compute_label_length_all_is_well() {
+        // Arrange
+        let label = "www.google.com";
+        let expected_length: u16 = 1 + 3 + 1 + 6 + 1 + 3;
+
+        // Act
+        let actual_length = compute_label_length(label);
+
+        // Assert
+        assert_eq!(expected_length, actual_length);
+    }
+
+    #[test]
+    fn test_compute_label_length_root() {
+        // Arrange
+        let label = ".";
+        let expected_length: u16 = 0;
+
+        // Act
+        let actual_length = compute_label_length(label);
+
+        // Assert
+        assert_eq!(expected_length, actual_length);
+    }
+
+    #[test]
+    fn test_cache_with_root_a_filter() {
+        // Arrange
+        let mut cache = InMemoryCache::new();
+
+        println!("cache: {:#?}", cache.store);
+
+        // Act
+        let actual_item = cache.get("a.root-servers.net.", &QType::A);
+
+        // Assert
+        assert_eq!(actual_item.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_cache_with_root_aaaa_filter() {
         // Arrange
         let mut cache = InMemoryCache::new();
 
         // Act
-        let actual_item = cache.get(".", QType::A);
+        let actual_item = cache.get("a.root-servers.net.", &QType::AAAA);
+
+        // Assert
+        assert_eq!(actual_item.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_cache_with_root_ns_filter() {
+        // Arrange
+        let mut cache = InMemoryCache::new();
+
+        // Act
+        let actual_item = cache.get(".", &QType::NS);
 
         // Assert
         assert_eq!(actual_item.unwrap().len(), 13);
     }
 
     #[test]
-    fn new_cache_with_root_ns_filter_aaaa_records() {
+    fn test_cache_insert_and_get_item_from_cache() {
         // Arrange
         let mut cache = InMemoryCache::new();
 
         // Act
-        let actual_item = cache.get(".", QType::AAAA);
-
-        // Assert
-        assert_eq!(actual_item.unwrap().len(), 13);
-    }
-
-    #[test]
-    fn new_cache_with_root_ns_filter_ns_records() {
-        // Arrange
-        let mut cache = InMemoryCache::new();
-
-        // Act
-        let actual_item = cache.get(".", QType::NS);
-
-        // Assert
-        assert_eq!(actual_item.unwrap().len(), 13);
-    }
-
-    #[test]
-    fn insert_and_get_item_from_cache() {
-        // Arrange
-        let mut cache = InMemoryCache::new();
-
-        // Act
-        let key = String::from("test-key");
+        let owner = String::from("test-owner");
         let resource_records = get_resource_records();
-        cache.insert(&key, resource_records.clone());
+        cache.insert(&owner, &QType::A, resource_records.clone());
 
         // Assert
-        let actual_item = cache.get(&key, QType::A);
+        let actual_item = cache.get(&owner, &QType::A);
         assert_eq!(actual_item.unwrap().len(), resource_records.len());
     }
 
     #[test]
-    fn expired_record_removal_on_get() {
+    fn test_cache_insert2() {
         // Arrange
         let mut cache = InMemoryCache::new();
-        let key = String::from("test-key");
-        let resource_records = get_cached_resource_records();
-        // Directly accessing store private field.
-        cache.store.insert(key.clone(), resource_records);
+        let owner = "testing-cache-insert2-owner";
+        let recs = get_resource_records();
+        let expected = recs.len();
+        let duplicate_rr = recs[0].clone();
+        cache.insert(owner, &QType::A, recs);
 
         // Act
-        let actual_item = cache.get(&key, QType::STAR);
+        cache.insert2(&duplicate_rr);
+        let actual = cache.get(owner, &QType::A).unwrap().len();
 
         // Assert
-        assert!(actual_item.is_none());
+        assert_eq!(expected, actual);
     }
 
     #[test]
-    fn missing_key_in_cache() {
+    fn test_cache_insert2_add() {
+        // Arrange
+        let mut cache = InMemoryCache::new();
+        let expected_record = &get_resource_records()[0];
+        let owner = &expected_record.name ;
+
+        // Act
+        cache.insert2(&expected_record);
+
+        // Assert
+        let cached = cache.get(owner.as_str(), &QType::A);
+        let actual_records = cached.unwrap();
+        assert_eq!(actual_records.len(), 1);
+        assert_eq!(&actual_records[0], expected_record);
+    }
+
+    #[test]
+    fn test_cache_missing_qtype_in_cache() {
         // Arrange
         let mut cache = InMemoryCache::new();
 
         // Act
-        let missing_key = String::from("test-missing-key");
-        let item = cache.get(&missing_key, QType::A);
+        let actual = cache.get("a.root-servers.net.", &QType::TXT);
 
         // Assert
-        assert!(item.is_none());
+        assert!(actual.is_none());
+    }
+
+    #[test]
+    fn test_cache_missing_owner_in_cache() {
+        // Arrange
+        let mut cache = InMemoryCache::new();
+
+        // Act
+        let actual = cache.get("non-existing-owner", &QType::TXT);
+
+        // Assert
+        assert!(actual.is_none());
     }
 
     fn get_resource_records() -> Vec<ResourceRecord> {
@@ -269,7 +389,7 @@ mod tests {
                     ttl: 2,
                     rd_length: 23,
                 },
-                last_refreshed_at: 1594366890,
+                last_refreshed_at: get_secs_since_epoch(),
             },
             CachedResourceRecord {
                 rr: ResourceRecord {
@@ -279,7 +399,7 @@ mod tests {
                     ttl: 2,
                     rd_length: 23,
                 },
-                last_refreshed_at: 1594366890,
+                last_refreshed_at: get_secs_since_epoch(),
             },
         ]
     }
