@@ -1,23 +1,25 @@
 use crate::business::models::{DNSQuery, DNSQueryResponse};
 use crate::resolver::Resolver;
+use std::sync::{Arc};
 
+// Handler can be called from multiple threads.
 pub struct Handler {
-    pub resolver: Resolver,
+    pub resolver: Arc<Resolver>,
 }
 
-impl<'a> Handler {
+impl Handler {
     pub fn new() -> Self {
         Self {
-            resolver: Resolver::new(),
+            resolver: Arc::new(Resolver::new()),
         }
     }
 
-    pub fn handle(&mut self, buf: &[u8]) -> Result<DNSQueryResponse, &'static str> {
+    pub async fn handle(&self, buf: &[u8]) -> Result<DNSQueryResponse, &'static str> {
         let (query, _) = DNSQuery::deserialize(buf);
 
         let rewritten_query = self.rewrite_query(query);
 
-        self.resolver.resolve(&rewritten_query)
+        self.resolver.resolve(&rewritten_query).await
     }
 
     fn rewrite_query(&self, query: DNSQuery) -> DNSQuery {

@@ -1,0 +1,34 @@
+admin:
+  access_log_path: /tmp/admin-envoy.log
+  address:
+    socket_address:
+      protocol: TCP
+      address: 127.0.0.1
+      port_value: 10000
+      
+static_resources:
+  listeners:
+    - name: listener_0
+      address:
+        socket_address:
+          protocol: UDP
+          address: 127.0.0.1
+          port_value: 9999
+      reuse_port: true
+      access_log:
+        name: envoy.file_access_log
+        typed_config:
+          "@type": type.googleapis.com/envoy.config.accesslog.v2.FileAccessLog
+          path: /dev/stdout
+      listener_filters:
+        name: envoy.filters.udp.dns_filter
+        typed_config:
+          "@type": "type.googleapis.com/envoy.extensions.filters.udp.dns_filter.v3alpha.DnsFilterConfig"
+          stat_prefix: dns_filter_prefix
+          client_config:
+            max_pending_lookups: 10
+            upstream_resolvers:
+              - socket_address:
+                  address: 127.0.0.1
+                  port_value: 8888
+
