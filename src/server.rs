@@ -1,43 +1,24 @@
 // Server invokes handler.
 
 use crate::handler::Handler;
-use std::net::UdpSocket;
+use std::net::{UdpSocket, SocketAddr};
 
-// pub struct DNSServer<'a> {
-//     handler: Handler,
-//     addr: &'a str,
-// }
+pub struct DNSServer {
+    handler: Handler,
+    addr: SocketAddr,
+    // reactor: UDPReactor
+}
 
-// impl DNSServer<'_> {
-//     pub fn new(addr: &'static str) -> Self {
-//         Self {
-//             handler: Handler::new(),
-//             addr,
-//         }
-//     }
+impl DNSServer {
+    pub fn new(addr: &'static str) -> Self {
+        Self {
+            handler: Handler::new(),
+            addr: addr.parse().unwrap(),
+        }
+    }
+}
 
-//     pub async fn listen(self) -> Result<(), io::Error> {
-//         let socket = UdpSocket::bind(&self.addr).await?;
-//         println!("Listening on {}", self.addr);
-
-//         loop {
-//             let mut buf = [0; 1024];
-//             let (bytes_read, src) = socket.recv_from(&mut buf).await?;
-
-//             let response = match self.handler.handle(&buf[..bytes_read]) {
-//                 Ok(resp) => resp,
-//                 Err(err) => Err(err),
-//             };
-
-//             let response_bytes = response.serialize();
-//             match socket.send_to(&response_bytes, src).await? {
-//                 Ok(bytes_written) => println!("bytes written: {}", bytes_written),
-//                 Err(err) => eprintln!("failed to send back response : {}", err),
-//             };
-//         }
-//     }
-// }
-
+/*
 pub fn run() {
     let addr = "127.0.0.1:53";
     let socket = UdpSocket::bind(&addr).expect("Failed to bind.");
@@ -73,3 +54,4 @@ pub fn run() {
         println!("writen bytes={}", written_bytes);
     }
 }
+*/

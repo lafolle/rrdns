@@ -1,0 +1,13 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: "envoy"
+    metrics_path: /stats/prometheus
+    static_configs:
+      - targets: ["localhost:10000"]
+  - job_name: "rrdns"
+    metrics_path: /
+    static_configs:
+      - targets: ["localhost:9000"]
+

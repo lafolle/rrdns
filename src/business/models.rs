@@ -1,5 +1,5 @@
 use itertools::interleave;
-use slice_as_array;
+use slice_as_array::{slice_as_array, slice_as_array_transmute};
 use std::cmp::Eq;
 use std::fmt;
 use std::hash::Hash;
@@ -10,7 +10,7 @@ pub enum ResponseCode {
     NoError,     // No error condition, 0
     FormatError, // Format error - 1
     // ServerFailure, // Name Error - 3
-    NameError,      // 3
+    NameError,      // 3, No such name.
     NotImplemented, // 4
     Refused,        // 5
 }
@@ -37,13 +37,13 @@ pub enum OpCode {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct MXData {
+pub struct MXData {
     preference: u16,
     exchange: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct TXTData {
+pub struct TXTData {
     length: u8,
     data: String,
 }
@@ -60,7 +60,7 @@ impl TXTData {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct SOAData {
+pub struct SOAData {
     mname: String,
     rname: String,
     serial: u32,
@@ -246,6 +246,26 @@ impl QType {
     }
 }
 
+impl fmt::Display for QType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}", match *self {
+            QType::A => "A",
+            QType::NS => "NS",
+            QType::CNAME => "CNAME",
+            QType::SOA => "SOA",
+            QType::PTR => "PTR",
+            QType::HINFO => "HINFO",
+            QType::MX => "MX",
+            QType::TXT => "TXT",
+            QType::AAAA => "AAAA",
+            QType::AXFR => "AXFR",
+            QType::MAILB => "MAILB",
+            QType::MAILA => "MAILA",
+            QType::STAR => "STAR",
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Class {
     IN, // 1 the internet
@@ -427,6 +447,19 @@ impl DNSQueryResponse {
             additional: additional_section,
         }
     }
+
+    pub fn contains_cnames(&self) -> Option<Vec<&ResourceRecord>> {
+        let cname_rrs = self.answers.iter().filter(|rr| {
+            if rr.r#type.to_qtype() == QType::CNAME {
+                return true;
+            }
+            false
+        }).collect::<Vec<&ResourceRecord>>();
+        if cname_rrs.len() > 0 {
+            return Some(cname_rrs);
+        }
+        None
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -584,6 +617,14 @@ pub struct DNSQuery {
 }
 
 impl DNSQuery {
+    
+    pub fn to_dig(&self) -> String {
+
+        let question = &self.questions[0];
+        format!("dig {} {}", question.qname, question.qtype)
+
+    }
+
     pub fn serialize(&self) -> Vec<u8> {
         let mut result = vec![];
 
@@ -916,7 +957,8 @@ fn is_ith_bit_set(buf: &[u8], i: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        DNSQueryHeaderSection, DNSQuestionQuery, OpCode, QClass, QType, ResponseCode, SOAData,
+        DNSQuery, DNSQueryHeaderSection, DNSQueryResponse, DNSQuestionQuery, OpCode, QClass, QType,
+        ResponseCode, SOAData,
     };
     #[test]
     fn DNSQueryHeaderSection_serialize_id() {
@@ -957,9 +999,10 @@ mod tests {
         };
         // 3 | w | w | w | 6 | g | o | o | g | l | e | 3 | c | o | m | 0
         let expected: Vec<u8> = vec![
-            3, 119, 119, 119, 6, 103, 111, 111, 103, 108, 101, 3, 99, 111, 109, // labels
-            1,   // A
-            1,   // IN
+            3, 119, 119, 119, 6, 103, 111, 111, 103, 108, 101, 3, 99, 111, 109, 0, // labels
+            0, // A
+            1, 0, // IN
+            1,
         ];
 
         // Act
@@ -973,6 +1016,39 @@ mod tests {
     }
 
     #[test]
+    fn DNSQueryResponse_deserialize() {
+        let response = DNSQueryResponse {
+            query: DNSQuery {
+                header: DNSQueryHeaderSection {
+                    id: 1, // 0 1
+
+                    // [1, 001, 0, 1, 0, 0, 0000]
+                    is_query: false,
+                    op_code: OpCode::Query,
+                    is_authoritative_answer: true,
+                    is_truncated: false,
+                    is_recursion_desired: true,
+                    is_recursion_available: false,
+                    response_code: ResponseCode::NoError,
+
+                    questions_count: 1,
+                    answers_count: 1,
+                    ns_rr_count: 0,
+                    additional_rr_count: 0,
+                },
+                questions: vec![],
+                additionals: vec![],
+            },
+            answers: vec![],
+            authority: vec![],
+            additional: vec![],
+        };
+
+        let expected = vec![0, 1, ];
+
+    }
+
+    #[test]
     fn DNSQuestionQuery_serialize_root_domain() {
         // Arrange
         let query = DNSQuestionQuery {
@@ -982,8 +1058,8 @@ mod tests {
         };
         let expected: Vec<u8> = vec![
             0, //
-            2, // NS
-            1, // IN
+            0, 2, // NS
+            0, 1, // IN
         ];
 
         // Act
@@ -1005,9 +1081,10 @@ mod tests {
             qclass: QClass::IN,
         };
         let expected: Vec<u8> = vec![
-            3, 119, 119, 119, 6, 103, 111, 111, 103, 108, 101, 3, 99, 111, 109, // labels
-            2,   // NS
-            1,   // IN
+            3, 119, 119, 119, 6, 103, 111, 111, 103, 108, 101, 3, 99, 111, 109, 0, // labels
+            0, // NS
+            2, 0, // IN
+            1,
         ];
 
         // Act
@@ -1060,7 +1137,7 @@ mod tests {
             expire_in_secs: 3,
             minimum: 200,
         };
- 
+
         // Act
         let actual = SOAData::deserialize(&raw, 0, raw.len() as u16);
 

@@ -1,0 +1,45 @@
+admin:
+  access_log_path: /tmp/admin-envoy.log
+  address:
+    socket_address:
+      protocol: TCP
+      address: 127.0.0.1
+      port_value: 10000
+      
+static_resources:
+  # Don't want to run rrdns on 53 because it needs to be run with sudo which locks the target dir and "cargo check" cannot be used
+  # parallelly. With envoy rrdns runs on non-sudo-required port.
+  # https://www.envoyproxy.io/docs/envoy/latest/configuration/listeners/udp_filters/udp_proxy
+  listeners:
+    - name: listener_0
+      address:
+        socket_address:
+          protocol: UDP
+          address: 0.0.0.0
+          port_value: 53
+      reuse_port: true
+      access_log:
+        name: envoy.file_access_log
+        typed_config:
+          "@type": type.googleapis.com/envoy.config.accesslog.v2.FileAccessLog
+          path: /dev/stdout
+      listener_filters:
+        name: envoy.filters_udp_listener.udp_proxy
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.udp.udp_proxy.v3.UdpProxyConfig
+          stat_prefix: rrdns
+          cluster: rrdns_service
+  clusters:
+    - name: rrdns_service
+      connect_timeout: 0.25s
+      type: STATIC
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: rrdns_service
+        endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: 127.0.0.1
+                    port_value: 8888
