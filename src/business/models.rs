@@ -427,6 +427,19 @@ impl DNSQueryResponse {
             additional: additional_section,
         }
     }
+
+    pub fn contains_cnames(&self) -> Option<Vec<&ResourceRecord>> {
+        let cname_rrs = self.answers.iter().filter(|rr| {
+            if rr.r#type.to_qtype() == QType::CNAME {
+                return true;
+            }
+            false
+        }).collect::<Vec<&ResourceRecord>>();
+        if cname_rrs.len() > 0 {
+            return Some(cname_rrs);
+        }
+        None
+    }
 }
 
 #[derive(Debug, Clone)]

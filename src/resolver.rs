@@ -44,22 +44,53 @@ impl Resolver {
 
     #[async_recursion]
     pub async fn resolve(&self, query: &DNSQuery) -> Result<DNSQueryResponse, FetchError> {
-        info!(
-            "{} resolve: {} {:#?}",
-            query.header.id, query.questions[0].qname, query.questions[0].qtype
-        );
+        let qtype = &query.questions[0].qtype;
+        let qname = &query.questions[0].qname;
+        info!("{} resolve: {} {:#?}", query.header.id, qname, qtype);
         if let Some(response) = self.resolve_from_cache(query) {
             info!(
                 "{} resolve:in_cache: {} {:?}",
-                query.header.id, query.questions[0].qname, query.questions[0].qtype
+                query.header.id, qname, qtype
             );
             return response;
         }
         info!(
             "{} resolve:not_in_cache: {} {:?}",
-            query.header.id, query.questions[0].qname, query.questions[0].qtype
+            query.header.id, qname, qtype
         );
-        self.resolve_from_name_servers(query).await
+        let mut result = self.resolve_from_name_servers(query).await?;
+        let result = match result.contains_cnames() {
+            Some(cname_records) => {
+                let mut cnames = vec![];
+                for rr in &cname_records {
+                    match &rr.r#type {
+                        Type::CNAME(cname) => {
+                            let mut cname = cname.to_string();
+                            if !cname.ends_with(".") {
+                                cname = format!("{}.", cname);
+                            }
+                            let query = self.build_query(cname.to_string(), QType::A);
+                            match self.resolve(&query).await {
+                                Ok(mut cname_result) => cnames.append(&mut cname_result.answers),
+                                Err(err) => error!(
+                                    "resolving cname result for domain={} err={:?}",
+                                    cname, err
+                                ),
+                            };
+                        },
+                        _ => {
+                            panic!("this should never happen");
+                        }
+                    };
+                };
+                result.query.header.answers_count += cnames.len() as u16;
+                result.answers.append(&mut cnames);
+                result
+            }
+            None => result,
+        };
+
+        Ok(result)
     }
 
     fn resolve_from_cache(&self, query: &DNSQuery) -> Option<Result<DNSQueryResponse, FetchError>> {
@@ -136,14 +167,21 @@ impl Resolver {
 
         // TODO: Detect infinite recursion.  "dig @localhost bbc.com" triggers this,  specific
         // problem is resolving A record for "dns1.p09.nsone.net".
-        if any(&parent_ns_records, |rr| if let Type::NS(ns) = &rr.r#type {
-            if ns == domain || format!("{}.", ns) == domain  {
-                true
-            } else  {
+        if any(&parent_ns_records, |rr| {
+            if let Type::NS(ns) = &rr.r#type {
+                if ns == domain || format!("{}.", ns) == domain {
+                    true
+                } else {
+                    false
+                }
+            } else {
                 false
             }
-        } else {false}) {
-            return Err(FetchError::InfiniteRecursionError(format!("inf recursion error for domain={}", domain)));
+        }) {
+            return Err(FetchError::InfiniteRecursionError(format!(
+                "inf recursion error for domain={}",
+                domain
+            )));
         }
 
         let ns_query = self.build_query(domain.to_string(), QType::NS);
@@ -185,14 +223,14 @@ impl Resolver {
             query.questions[0].qtype,
             if log_enabled!(Level::Debug) {
                 ns_records
-                .iter()
-                .filter_map(|rr| {
-                    if let Type::NS(val) = rr.r#type.clone() {
-                        return Some(val);
-                    }
-                    None
-                })
-                .collect::<Vec<String>>()
+                    .iter()
+                    .filter_map(|rr| {
+                        if let Type::NS(val) = rr.r#type.clone() {
+                            return Some(val);
+                        }
+                        None
+                    })
+                    .collect::<Vec<String>>()
             } else {
                 vec![]
             }
@@ -214,7 +252,9 @@ impl Resolver {
                         Err(err) => match err {
                             FetchError::QueryError(err) => return Err(FetchError::QueryError(err)),
                             FetchError::NetworkError(_err) => continue,
-                            FetchError::InfiniteRecursionError(err) => return Err(FetchError::InfiniteRecursionError(err)),
+                            FetchError::InfiniteRecursionError(err) => {
+                                return Err(FetchError::InfiniteRecursionError(err))
+                            }
                             FetchError::NoIPError(err) => return Err(FetchError::NoIPError(err)),
                         },
                     };
@@ -224,7 +264,9 @@ impl Resolver {
                         Err(err) => match err {
                             FetchError::QueryError(err) => return Err(FetchError::QueryError(err)),
                             FetchError::NetworkError(_err) => continue,
-                            FetchError::InfiniteRecursionError(err) => return Err(FetchError::InfiniteRecursionError(err)),
+                            FetchError::InfiniteRecursionError(err) => {
+                                return Err(FetchError::InfiniteRecursionError(err))
+                            }
                             FetchError::NoIPError(err) => return Err(FetchError::NoIPError(err)),
                         },
                     };
@@ -257,8 +299,10 @@ impl Resolver {
                                 FetchError::NetworkError(_err) => continue,
                                 FetchError::InfiniteRecursionError(err) => {
                                     return Err(FetchError::InfiniteRecursionError(err));
-                                },
-                                FetchError::NoIPError(err) => return Err(FetchError::NoIPError(err)),
+                                }
+                                FetchError::NoIPError(err) => {
+                                    return Err(FetchError::NoIPError(err))
+                                }
                             },
                         };
                     }
@@ -266,7 +310,10 @@ impl Resolver {
             }
         }
 
-        Err(FetchError::NoIPError(format!("{} no ip for name servers in cache", query.header.id)))
+        Err(FetchError::NoIPError(format!(
+            "{} no ip for name servers in cache",
+            query.header.id
+        )))
     }
 
     async fn request(
@@ -311,10 +358,10 @@ impl Resolver {
                                         }
                                         FetchError::QueryError(err) => {
                                             return Err(FetchError::QueryError(err));
-                                        },
+                                        }
                                         FetchError::InfiniteRecursionError(err) => {
                                             return Err(FetchError::InfiniteRecursionError(err));
-                                        },
+                                        }
                                         FetchError::NoIPError(err) => {
                                             return Err(FetchError::NoIPError(err));
                                         }
