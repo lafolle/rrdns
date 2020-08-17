@@ -2,19 +2,21 @@ use crate::business::models::{
     DNSQuery, DNSQueryHeaderSection, DNSQueryResponse, DNSQuestionQuery, OpCode, QClass, QType,
     RRSet, ResponseCode, Type,
 };
-use log::{info, error};
-use itertools::all;
+use itertools::{all, any};
+use log::{error, info, log_enabled, Level};
 use rand::prelude::*;
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
-mod cache;
+pub mod cache;
 use crate::business::models::ResourceRecord;
+use crate::error::FetchError;
 use crate::reactor::cmd::ReactorQuery;
 use crate::reactor::Reactor;
 use async_recursion::async_recursion;
-use cache::{Cache, InMemoryCache};
+use cache::{CRRSet, Cache, InMemoryCache};
 use tokio::sync::mpsc::Sender;
 
 mod zone;
@@ -41,7 +43,7 @@ impl Resolver {
     }
 
     #[async_recursion]
-    pub async fn resolve(&self, query: &DNSQuery) -> Result<DNSQueryResponse, &'static str> {
+    pub async fn resolve(&self, query: &DNSQuery) -> Result<DNSQueryResponse, FetchError> {
         info!(
             "{} resolve: {} {:#?}",
             query.header.id, query.questions[0].qname, query.questions[0].qtype
@@ -60,13 +62,31 @@ impl Resolver {
         self.resolve_from_name_servers(query).await
     }
 
+    fn resolve_from_cache(&self, query: &DNSQuery) -> Option<Result<DNSQueryResponse, FetchError>> {
+        let domain = &query.questions[0].qname;
+        let qtype = &query.questions[0].qtype;
+        let mut cache = self.cache.lock().unwrap();
+        if let Some(answers) = cache.get(domain, qtype) {
+            let mut query_of_response = query.clone();
+            query_of_response.header.is_query = false;
+            query_of_response.header.answers_count = answers.len() as u16;
+            query_of_response.header.is_authoritative_answer = false;
+            return Some(Ok(DNSQueryResponse {
+                query: query_of_response,
+                answers: answers,
+                authority: vec![],
+                additional: vec![],
+            }));
+        }
+        None
+    }
+
     async fn resolve_from_name_servers(
         &self,
         query: &DNSQuery,
-    ) -> Result<DNSQueryResponse, &'static str> {
+    ) -> Result<DNSQueryResponse, FetchError> {
         let domain = &query.questions[0].qname;
-        let (name_servers_result, is_grand_parent_ns) = self.fetch_name_servers(domain).await;
-        let name_servers = name_servers_result?;
+        let (name_servers, is_grand_parent_ns) = self.fetch_name_servers(domain).await?;
         if is_grand_parent_ns {
             name_servers.iter().for_each(|rr| {
                 let mut new_rr = rr.clone();
@@ -90,34 +110,12 @@ impl Resolver {
         self.resolve_from_authority(&query, &name_servers).await
     }
 
-    fn resolve_from_cache(
-        &self,
-        query: &DNSQuery,
-    ) -> Option<Result<DNSQueryResponse, &'static str>> {
-        let domain = &query.questions[0].qname;
-        let qtype = &query.questions[0].qtype;
-        let mut cache = self.cache.lock().unwrap();
-        if let Some(answers) = cache.get(domain, qtype) {
-            let mut query_of_response = query.clone();
-            query_of_response.header.is_query = false;
-            query_of_response.header.answers_count = answers.len() as u16;
-            query_of_response.header.is_authoritative_answer = false;
-            return Some(Ok(DNSQueryResponse {
-                query: query_of_response,
-                answers: answers,
-                authority: vec![],
-                additional: vec![],
-            }));
-        }
-        None
-    }
-
-    async fn fetch_name_servers(&self, domain: &str) -> (Result<RRSet, &'static str>, bool) {
+    async fn fetch_name_servers(&self, domain: &str) -> Result<(RRSet, bool), FetchError> {
         {
             let mut cache = self.cache.lock().unwrap();
             if let Some(name_servers) = cache.get(&domain, &QType::NS) {
                 info!("fetch_name_servers:in_cache: {}", domain);
-                return (Ok(name_servers), false);
+                return Ok((name_servers, false));
             }
         }
         info!(
@@ -129,15 +127,24 @@ impl Resolver {
         // Ask parent name servers for NS of "domain".
         let parent_zone = parent_zone(domain);
         let parent_ns_query = self.build_query(parent_zone, QType::NS);
-        let parent_ns_query_response = match self.resolve(&parent_ns_query).await {
-            Ok(response) => response,
-            Err(err) => return (Err(err), false),
-        };
+        let parent_ns_query_response = self.resolve(&parent_ns_query).await?;
         let parent_ns_records = if parent_ns_query_response.answers.len() > 0 {
             parent_ns_query_response.answers
         } else {
             parent_ns_query_response.authority
         };
+
+        // TODO: Detect infinite recursion.  "dig @localhost bbc.com" triggers this,  specific
+        // problem is resolving A record for "dns1.p09.nsone.net".
+        if any(&parent_ns_records, |rr| if let Type::NS(ns) = &rr.r#type {
+            if ns == domain || format!("{}.", ns) == domain  {
+                true
+            } else  {
+                false
+            }
+        } else {false}) {
+            return Err(FetchError::InfiniteRecursionError(format!("inf recursion error for domain={}", domain)));
+        }
 
         let ns_query = self.build_query(domain.to_string(), QType::NS);
         match self
@@ -149,20 +156,20 @@ impl Resolver {
                     if all(response.answers.iter(), |rr| {
                         rr.r#type.to_qtype() == QType::NS
                     }) {
-                        return (Ok(response.answers), false);
+                        return Ok((response.answers, false));
                     } else {
-                        return (Ok(parent_ns_records), true);
+                        return Ok((parent_ns_records, true));
                     }
                 }
                 if all(response.authority.iter(), |rr| {
                     rr.r#type.to_qtype() == QType::NS
                 }) {
-                    return (Ok(response.authority), false);
+                    return Ok((response.authority, false));
                 } else {
-                    return (Ok(parent_ns_records), true);
+                    return Ok((parent_ns_records, true));
                 }
             }
-            Err(err) => (Err(err), false),
+            Err(err) => Err(err),
         }
     }
 
@@ -170,10 +177,25 @@ impl Resolver {
         &self,
         query: &DNSQuery,
         ns_records: &RRSet,
-    ) -> Result<DNSQueryResponse, &'static str> {
+    ) -> Result<DNSQueryResponse, FetchError> {
         info!(
-            "{} resolve_from_authority: {} {:?}",
-            query.header.id, query.questions[0].qname, query.questions[0].qtype
+            "{} resolve_from_authority: {} {:?} {:?}",
+            query.header.id,
+            query.questions[0].qname,
+            query.questions[0].qtype,
+            if log_enabled!(Level::Debug) {
+                ns_records
+                .iter()
+                .filter_map(|rr| {
+                    if let Type::NS(val) = rr.r#type.clone() {
+                        return Some(val);
+                    }
+                    None
+                })
+                .collect::<Vec<String>>()
+            } else {
+                vec![]
+            }
         );
         // Get A record for authority server.
         // Sometimes only some of the records may be present in cache
@@ -187,9 +209,25 @@ impl Resolver {
                     AAAA_record = cache.get(&name_server, &QType::AAAA);
                 }
                 if let Some(list_of_ipv4s) = A_record {
-                    return self.request(&query, list_of_ipv4s).await;
+                    match self.request(&query, list_of_ipv4s).await {
+                        Ok(response) => return Ok(response),
+                        Err(err) => match err {
+                            FetchError::QueryError(err) => return Err(FetchError::QueryError(err)),
+                            FetchError::NetworkError(_err) => continue,
+                            FetchError::InfiniteRecursionError(err) => return Err(FetchError::InfiniteRecursionError(err)),
+                            FetchError::NoIPError(err) => return Err(FetchError::NoIPError(err)),
+                        },
+                    };
                 } else if let Some(list_of_ipv6s) = AAAA_record {
-                    return self.request(&query, list_of_ipv6s).await;
+                    match self.request(&query, list_of_ipv6s).await {
+                        Ok(response) => return Ok(response),
+                        Err(err) => match err {
+                            FetchError::QueryError(err) => return Err(FetchError::QueryError(err)),
+                            FetchError::NetworkError(_err) => continue,
+                            FetchError::InfiniteRecursionError(err) => return Err(FetchError::InfiniteRecursionError(err)),
+                            FetchError::NoIPError(err) => return Err(FetchError::NoIPError(err)),
+                        },
+                    };
                 }
             };
         }
@@ -210,20 +248,32 @@ impl Resolver {
                         A_record = cache.get(&dotted_name_server, &QType::A);
                     }
                     if let Some(ip_records) = A_record {
-                        return self.request(&query, ip_records).await;
+                        match self.request(&query, ip_records).await {
+                            Ok(response) => return Ok(response),
+                            Err(err) => match err {
+                                FetchError::QueryError(err) => {
+                                    return Err(FetchError::QueryError(err))
+                                }
+                                FetchError::NetworkError(_err) => continue,
+                                FetchError::InfiniteRecursionError(err) => {
+                                    return Err(FetchError::InfiniteRecursionError(err));
+                                },
+                                FetchError::NoIPError(err) => return Err(FetchError::NoIPError(err)),
+                            },
+                        };
                     }
                 }
             }
         }
 
-        Err("no ip for name servers in cache")
+        Err(FetchError::NoIPError(format!("{} no ip for name servers in cache", query.header.id)))
     }
 
     async fn request(
         &self,
         query: &DNSQuery,
         ip_records: Vec<ResourceRecord>,
-    ) -> Result<DNSQueryResponse, &'static str> {
+    ) -> Result<DNSQueryResponse, FetchError> {
         for rr in &ip_records {
             let socket_server_addr: SocketAddr = match rr.r#type {
                 Type::A(ip4) => SocketAddr::new(IpAddr::V4(ip4), 53),
@@ -236,24 +286,44 @@ impl Resolver {
             let reactor_query = ReactorQuery {
                 query: query.clone(),
                 peer_addr: socket_server_addr,
-                tx: tx_oneshot,
+                respond_tx: tx_oneshot,
             };
 
             let mut reactor_tx = self.reactor_tx.clone();
             match reactor_tx.send(reactor_query).await {
                 Ok(_) => {
                     match rx_oneshot.await {
-                        Ok(reactor_response) => {
-                            // Update cache.
-                            if reactor_response.response.query.header.response_code
-                                == ResponseCode::NoError
-                            {
-                                self.update_cache(&reactor_response.response);
+                        Ok(reactor_response_result) => {
+                            match reactor_response_result {
+                                Ok(reactor_response) => {
+                                    // Update cache.
+                                    self.update_cache(&reactor_response.response);
+                                    return Ok(reactor_response.response);
+                                }
+                                Err(err) => {
+                                    match err {
+                                        FetchError::NetworkError(err) => {
+                                            info!(
+                                                "{} NetworkError={} trying another ip",
+                                                query.header.id, err
+                                            );
+                                            continue;
+                                        }
+                                        FetchError::QueryError(err) => {
+                                            return Err(FetchError::QueryError(err));
+                                        },
+                                        FetchError::InfiniteRecursionError(err) => {
+                                            return Err(FetchError::InfiniteRecursionError(err));
+                                        },
+                                        FetchError::NoIPError(err) => {
+                                            return Err(FetchError::NoIPError(err));
+                                        }
+                                    };
+                                }
                             }
-                            return Ok(reactor_response.response);
                         }
                         Err(err) => {
-                            error!("Failed to receive response on oneshot channel from reactor: err={}", err);
+                            error!("{} Failed to receive response on oneshot channel from reactor: err={}", query.header.id, err);
                         }
                     }
                 }
@@ -261,7 +331,15 @@ impl Resolver {
             };
         }
 
-        Err("request failed")
+        panic!(
+            "request: could not send request to {} ips",
+            ip_records.len()
+        );
+    }
+
+    pub fn clone_cache(&self) -> HashMap<String, HashMap<QType, CRRSet>> {
+        let cache = self.cache.lock().unwrap();
+        cache.clone_cache()
     }
 
     fn update_cache(&self, response: &DNSQueryResponse) {
@@ -277,9 +355,10 @@ impl Resolver {
 
     // TODO: use builder pattern.
     fn build_query(&self, qname: String, qtype: QType) -> DNSQuery {
+        let id = random::<u16>();
         DNSQuery {
             header: DNSQueryHeaderSection {
-                id: random(),
+                id,
                 op_code: OpCode::Query,
                 is_query: true,
                 is_truncated: false,

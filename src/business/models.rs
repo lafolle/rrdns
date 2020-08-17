@@ -10,7 +10,7 @@ pub enum ResponseCode {
     NoError,     // No error condition, 0
     FormatError, // Format error - 1
     // ServerFailure, // Name Error - 3
-    NameError,      // 3
+    NameError,      // 3, No such name.
     NotImplemented, // 4
     Refused,        // 5
 }

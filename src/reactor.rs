@@ -1,5 +1,6 @@
-use crate::business::models::DNSQueryResponse;
-use log::{info, error};
+use crate::business::models::{DNSQueryResponse, ResponseCode};
+use crate::error::FetchError;
+use log::{error, info};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use tokio::net::UdpSocket;
@@ -42,12 +43,15 @@ impl Reactor {
                     let wire_data = cmd.query.serialize();
                     match socket.send_to(wire_data.as_slice(), cmd.peer_addr).await {
                         Ok(written_bytes) => {
-                            info!("reactor: written {} bytes", written_bytes);
+                            info!("{} reactor: written {} bytes to addr={}", cmd.query.header.id, written_bytes, cmd.peer_addr);
+                            if registry.contains_key(&cmd.query.header.id) {
+                                error!("{} key={} exists", cmd.query.header.id, cmd.query.header.id);
+                            }
                             registry.insert(cmd.query.header.id, cmd);
                         },
                         Err(err) => {
-                            // BUG: return error to the resolver. cmd.tx.send();
-                            error!("reactor: error={} addr={}", err, addr)
+                            error!("reactor: send_to error={} addr={}", err, addr);
+                            cmd.respond_tx.send(Err(FetchError::NetworkError(err))).unwrap();
                         }
                     };
                 },
@@ -60,10 +64,16 @@ impl Reactor {
                         let reactor_response = ReactorResponse {
                             response
                         };
-                        if cmd.tx.is_closed() {
+                        if cmd.respond_tx.is_closed() {
                             panic!("reactor: oneshot receiver is closed");
                         }
-                        cmd.tx.send(reactor_response).unwrap();
+
+                        if reactor_response.response.query.header.response_code != ResponseCode::NoError {
+                            cmd.respond_tx.send(Err(FetchError::QueryError(reactor_response.response))).unwrap();
+                            continue;
+                        }
+
+                        cmd.respond_tx.send(Ok(reactor_response)).unwrap();
                     } else {
                         // This should never happen.
                         error!("\"{}\" is missing in registry", response.query.header.id);

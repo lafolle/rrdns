@@ -1,5 +1,6 @@
 use crate::business::models::{DNSQuery, DNSQueryResponse};
 use std::net::{SocketAddr};
+use crate::error::FetchError;
 
 use tokio::sync::oneshot::Sender;
 
@@ -7,7 +8,7 @@ use tokio::sync::oneshot::Sender;
 pub struct ReactorQuery {
     pub query: DNSQuery,
     pub peer_addr: SocketAddr,
-    pub tx: Sender<ReactorResponse>
+    pub respond_tx: Sender<Result<ReactorResponse, FetchError>>
 }
 
 #[derive(Debug)]

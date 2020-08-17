@@ -12,8 +12,8 @@ static_resources:
       address:
         socket_address:
           protocol: UDP
-          address: 127.0.0.1
-          port_value: 9999
+          address: 0.0.0.0
+          port_value: 53
       reuse_port: true
       access_log:
         name: envoy.file_access_log
@@ -24,7 +24,7 @@ static_resources:
         name: envoy.filters.udp.dns_filter
         typed_config:
           "@type": "type.googleapis.com/envoy.extensions.filters.udp.dns_filter.v3alpha.DnsFilterConfig"
-          stat_prefix: dns_filter_prefix
+          stat_prefix: rrdns
           client_config:
             max_pending_lookups: 10
             upstream_resolvers:

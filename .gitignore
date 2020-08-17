@@ -26,3 +26,6 @@ Sessionx.vim
 tags
 # Persistent undo
 [._]*.un~
+
+# prometheus data
+data

@@ -18,7 +18,7 @@ rr = "run --release"
 slice_as_array = { version = "1.1.0", default-features = false }
 itertools = { version = "0.9.0" }
 rand = "0.7.3"
-tokio = { version = "0.2.22", features = ["udp", "macros", "rt-core", "sync", "full"] }
+tokio = { version = "0.2.22", features = ["full"] }
 md5 = "0.7.0"
 async-recursion = "0.3.1"
 log = "0.4.0"
@@ -26,3 +26,4 @@ env_logger = "0.7.1"
 clap = "2.33.2"
 prometheus = "0.9.0"
 lazy_static = "1.4.0"
+hyper = "0.13.7"

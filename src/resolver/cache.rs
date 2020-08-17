@@ -1,17 +1,18 @@
 use crate::business::models::{Class, QType, ResourceRecord, Type};
+use log::{debug};
 use md5;
 use std::collections::HashMap;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
-use log::{debug};
 
 pub trait Cache {
     fn get(&mut self, domain: &str, qtype: &QType) -> Option<Vec<ResourceRecord>>;
     fn insert2(&mut self, resource_record: &ResourceRecord);
+    fn clone_cache(&self) -> HashMap<String, HashMap<QType, CRRSet>>;
 }
 
-#[derive(Debug)]
-struct CachedResourceRecord {
+#[derive(Debug, Clone)]
+pub struct CachedResourceRecord {
     rr: ResourceRecord,
     last_refreshed_at: u32, // secs since epoch
 }
@@ -25,7 +26,9 @@ impl CachedResourceRecord {
     }
 }
 
-type CRRSet = Vec<CachedResourceRecord>;
+pub type CRRSet = Vec<CachedResourceRecord>;
+
+pub type Store = HashMap<String, HashMap<QType, CRRSet>>;
 
 pub struct InMemoryCache {
     store: HashMap<String, HashMap<QType, CRRSet>>,
@@ -154,6 +157,7 @@ impl Cache for InMemoryCache {
             resource_record.name.clone()
         };
         let qtype = resource_record.r#type.to_qtype();
+        debug!("caching: {} {:?}", domain, resource_record);
 
         let qmap = self
             .store
@@ -173,6 +177,10 @@ impl Cache for InMemoryCache {
                 last_refreshed_at: get_secs_since_epoch(),
             }]);
         }
+    }
+
+    fn clone_cache(&self) -> HashMap<String, HashMap<QType, CRRSet>> {
+        self.store.clone()
     }
 }
 
