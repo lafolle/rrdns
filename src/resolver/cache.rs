@@ -31,7 +31,7 @@ pub type CRRSet = Vec<CachedResourceRecord>;
 pub type Store = HashMap<String, HashMap<QType, CRRSet>>;
 
 pub struct InMemoryCache {
-    store: HashMap<String, HashMap<QType, CRRSet>>,
+    store: Store,
 }
 
 impl InMemoryCache {
@@ -179,7 +179,7 @@ impl Cache for InMemoryCache {
         }
     }
 
-    fn clone_cache(&self) -> HashMap<String, HashMap<QType, CRRSet>> {
+    fn clone_cache(&self) -> Store {
         self.store.clone()
     }
 }
