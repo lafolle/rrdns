@@ -208,7 +208,7 @@ mod tests {
 
     use super::{
         compute_label_length, get_secs_since_epoch, CachedResourceRecord, InMemoryCache,
-        ResourceRecord,
+        ResourceRecord, Cache,
     };
     use crate::business::models::{Class, QType, Type};
     use std::net::Ipv4Addr;
@@ -242,117 +242,84 @@ mod tests {
     #[test]
     fn test_cache_with_root_a_filter() {
         // Arrange
-        //let mut cache = InMemoryCache::new();
+        let mut cache = InMemoryCache::new();
 
         // Act
-        //let actual_item = cache.get("a.root-servers.net.", &QType::A);
+        let actual_item = cache.get("a.root-servers.net.", &QType::A);
 
         // Assert
-        //assert_eq!(actual_item.unwrap().len(), 1);
+        assert_eq!(actual_item.unwrap().len(), 1);
     }
 
     #[test]
     fn test_cache_with_root_aaaa_filter() {
         // Arrange
-        //let mut cache = InMemoryCache::new();
+        let mut cache = InMemoryCache::new();
 
         // Act
-        ////let actual_item = cache.get("a.root-servers.net.", &QType::AAAA);
+        let actual_item = cache.get("a.root-servers.net.", &QType::AAAA);
 
         // Assert
-        ////assert_eq!(actual_item.unwrap().len(), 1);
+        assert_eq!(actual_item.unwrap().len(), 1);
     }
 
     #[test]
     fn test_cache_with_root_ns_filter() {
         // Arrange
-        // let mut cache = InMemoryCache::new();
+        let mut cache = InMemoryCache::new();
 
         // Act
-        // let actual_item = cache.get(".", &QType::NS);
+        let actual_item = cache.get(".", &QType::NS);
 
         // Assert
-        // assert_eq!(actual_item.unwrap().len(), 13);
+        assert_eq!(actual_item.unwrap().len(), 13);
     }
 
     #[test]
     fn test_cache_insert_and_get_item_from_cache() {
         // Arrange
-        // let mut cache = InMemoryCache::new();
+        let mut cache = InMemoryCache::new();
 
         // Act
-        // let owner = String::from("test-owner");
-        // let resource_records = get_resource_records();
-        // cache.insert(&owner, &QType::A, resource_records.clone());
+        let resource_record = &get_resource_records()[0];
+        let owner1 = &resource_record.name;
+        cache.insert2(&resource_record);
+        cache.insert2(&resource_record); // Duplicate must not be inserted.
 
         // Assert
-        // let actual_item = cache.get(&owner, &QType::A);
-        // assert_eq!(actual_item.unwrap().len(), resource_records.len());
-    }
-
-    #[test]
-    fn test_cache_insert2() {
-        // Arrange
-        //let mut cache = InMemoryCache::new();
-        //let owner = "testing-cache-insert2-owner";
-        //let recs = get_resource_records();
-        //let expected = recs.len();
-        //let duplicate_rr = recs[0].clone();
-        //cache.insert(owner, &QType::A, recs);
-
-        // Act
-        //cache.insert2(&duplicate_rr);
-        //let actual = cache.get(owner, &QType::A).unwrap().len();
-
-        // Assert
-        //assert_eq!(expected, actual);
-    }
-
-    #[test]
-    fn test_cache_insert2_add() {
-        // Arrange
-        //let mut cache = InMemoryCache::new();
-        //let expected_record = &get_resource_records()[0];
-        //let owner = &expected_record.name;
-
-        // Act
-        //cache.insert2(&expected_record);
-
-        // Assert
-        //let cached = cache.get(owner.as_str(), &QType::A);
-        //let actual_records = cached.unwrap();
-        //assert_eq!(actual_records.len(), 1);
-        //assert_eq!(&actual_records[0], expected_record);
+        let actual_item = cache.get(owner1, &QType::A);
+        assert!(!actual_item.is_none());
+        assert_eq!(actual_item.unwrap().len(), 1);
     }
 
     #[test]
     fn test_cache_missing_qtype_in_cache() {
         // Arrange
-        // let mut cache = InMemoryCache::new();
+        let mut cache = InMemoryCache::new();
 
         // Act
-        // let actual = cache.get("a.root-servers.net.", &QType::TXT);
+        let actual = cache.get("a.root-servers.net.", &QType::TXT);
 
         // Assert
-        // assert!(actual.is_none());
+        assert!(actual.is_none());
     }
 
     #[test]
     fn test_cache_missing_owner_in_cache() {
         // Arrange
-        // let mut cache = InMemoryCache::new();
+        let mut cache = InMemoryCache::new();
 
         // Act
-        // let actual = cache.get("non-existing-owner", &QType::TXT);
+        let actual = cache.get("non-existing-owner", &QType::TXT);
 
         // Assert
-        // assert!(actual.is_none());
+        assert!(actual.is_none());
     }
 
     fn get_resource_records() -> Vec<ResourceRecord> {
         vec![
             ResourceRecord {
-                name: String::from("karanry.com"),
+                name: String::from("karanry.com."),
                 class: Class::IN,
                 r#type: Type::A(Ipv4Addr::new(23, 23, 23, 23)),
                 ttl: 2,
@@ -372,7 +339,7 @@ mod tests {
         vec![
             CachedResourceRecord {
                 rr: ResourceRecord {
-                    name: String::from("karanry.com"),
+                    name: String::from("karanry.com."),
                     class: Class::IN,
                     r#type: Type::A(Ipv4Addr::new(23, 23, 23, 23)),
                     ttl: 2,
