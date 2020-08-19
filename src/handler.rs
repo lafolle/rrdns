@@ -33,6 +33,7 @@ impl Handler {
             Ok(mut response) => {
                 info!("{}/{} resolved", response.query.header.id, query_id);
                 response.query.header.id = query_id;
+                response.query.header.is_recursion_available = true;
                 return Ok(response);
             }
             Err(err) => {
