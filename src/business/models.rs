@@ -246,6 +246,26 @@ impl QType {
     }
 }
 
+impl fmt::Display for QType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}", match *self {
+            QType::A => "A",
+            QType::NS => "NS",
+            QType::CNAME => "CNAME",
+            QType::SOA => "SOA",
+            QType::PTR => "PTR",
+            QType::HINFO => "HINFO",
+            QType::MX => "MX",
+            QType::TXT => "TXT",
+            QType::AAAA => "AAAA",
+            QType::AXFR => "AXFR",
+            QType::MAILB => "MAILB",
+            QType::MAILA => "MAILA",
+            QType::STAR => "STAR",
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Class {
     IN, // 1 the internet
@@ -597,6 +617,14 @@ pub struct DNSQuery {
 }
 
 impl DNSQuery {
+    
+    pub fn to_dig(&self) -> String {
+
+        let question = &self.questions[0];
+        format!("dig {} {}", question.qname, question.qtype)
+
+    }
+
     pub fn serialize(&self) -> Vec<u8> {
         let mut result = vec![];
 

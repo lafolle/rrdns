@@ -9,6 +9,7 @@ pub enum FetchError {
     // TODO: This case should not be an error.
     InfiniteRecursionError(String),
 
-    NoIPError(String),
+    // VerificationError(String),
 
+    NoIPError(String),
 }

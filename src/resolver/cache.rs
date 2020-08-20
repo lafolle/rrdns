@@ -1,5 +1,5 @@
 use crate::business::models::{Class, QType, ResourceRecord, Type};
-use log::{debug};
+use log::debug;
 use md5;
 use std::collections::HashMap;
 use std::fs;
@@ -150,6 +150,7 @@ impl Cache for InMemoryCache {
         None
     }
 
+    // Duplicates are ignored.
     fn insert2(&mut self, resource_record: &ResourceRecord) {
         let domain = if !resource_record.name.ends_with('.') {
             format!("{}.", resource_record.name)
@@ -166,7 +167,6 @@ impl Cache for InMemoryCache {
 
         let cached_rrs = qmap.entry(qtype).or_insert_with(Vec::new);
 
-        // ignore if duplicate.
         if cached_rrs
             .iter()
             .find(|crr| crr.rr.name == *domain && crr.rr.r#type.to_qtype() == qtype)
@@ -207,8 +207,8 @@ fn get_secs_since_epoch() -> u32 {
 mod tests {
 
     use super::{
-        compute_label_length, get_secs_since_epoch, CachedResourceRecord, InMemoryCache,
-        ResourceRecord, Cache,
+        compute_label_length, get_secs_since_epoch, Cache, CachedResourceRecord, InMemoryCache,
+        ResourceRecord,
     };
     use crate::business::models::{Class, QType, Type};
     use std::net::Ipv4Addr;

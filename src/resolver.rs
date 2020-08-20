@@ -59,6 +59,8 @@ impl Resolver {
             query.header.id, qname, qtype
         );
         let mut result = self.resolve_from_name_servers(query).await?;
+
+        // Resolve cnames.
         let result = match result.contains_cnames() {
             Some(cname_records) => {
                 let mut cnames = vec![];
