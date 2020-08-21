@@ -4,6 +4,7 @@ use md5;
 use std::collections::HashMap;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
+use serde::{Serialize, Deserialize};
 
 pub trait Cache {
     fn get(&mut self, domain: &str, qtype: &QType) -> Option<Vec<ResourceRecord>>;
@@ -11,7 +12,7 @@ pub trait Cache {
     fn clone_cache(&self) -> HashMap<String, HashMap<QType, CRRSet>>;
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedResourceRecord {
     rr: ResourceRecord,
     last_refreshed_at: u32, // secs since epoch

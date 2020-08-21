@@ -4,6 +4,7 @@ use std::cmp::Eq;
 use std::fmt;
 use std::hash::Hash;
 use std::net::{Ipv4Addr, Ipv6Addr};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResponseCode {
@@ -36,13 +37,13 @@ pub enum OpCode {
     Update,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MXData {
     preference: u16,
     exchange: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TXTData {
     length: u8,
     data: String,
@@ -59,7 +60,7 @@ impl TXTData {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SOAData {
     mname: String,
     rname: String,
@@ -131,7 +132,7 @@ impl SOAData {
 
 // https://tools.ietf.org/html/rfc1035 3.2.2
 // Type is used in ResourceRecords.
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum Type {
     A(Ipv4Addr),    // Host address. 1
     NS(String),     // Authoritative name server for the domain. 2
@@ -175,7 +176,7 @@ impl Type {
 }
 
 // https://tools.ietf.org/html/rfc1035 3.2.3
-#[derive(Debug, PartialEq, Clone, Copy, Hash, Eq)]
+#[derive(Debug, PartialEq, Clone, Copy, Hash, Eq, Serialize, Deserialize)]
 pub enum QType {
     A,     // Host address. 1
     NS,    // Authoritative name server for the domain. 2
@@ -266,7 +267,7 @@ impl fmt::Display for QType {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Class {
     IN, // 1 the internet
     CH, // 3 the CHAOS class
@@ -328,7 +329,7 @@ impl QClass {
 // Represents list of RR of same type and class.
 pub type RRSet = Vec<ResourceRecord>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceRecord {
     pub name: String,   // owner name to which this record pertains.
     pub r#type: Type,   // 2 octets, data will be inside Type enum.

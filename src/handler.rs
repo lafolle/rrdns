@@ -1,12 +1,11 @@
 use crate::business::models::{DNSQuery, DNSQueryResponse, QType};
 use crate::error::FetchError;
-use crate::resolver::cache::CRRSet;
+use crate::resolver::cache::{CRRSet, Store};
 use crate::resolver::Resolver;
 use log::info;
 use rand::prelude::*;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
 
 // Handler can be called from multiple threads.
 pub struct Handler {
@@ -61,7 +60,7 @@ impl Handler {
         }
     }
 
-    pub fn clone_cache(&self) -> HashMap<String, HashMap<QType, CRRSet>> {
+    pub fn clone_cache(&self) -> Store {
         self.resolver.clone_cache()
     }
 

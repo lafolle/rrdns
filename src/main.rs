@@ -6,19 +6,18 @@ use error::FetchError;
 use lazy_static::lazy_static;
 use log::{debug, error, info};
 use std::convert::Infallible;
-use std::future::Future;
 use std::net::SocketAddr;
 use std::ops::Deref;
 use std::panic;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
 use std::time::Instant;
 use tokio;
 use tokio::sync::mpsc;
-
-use hyper::service::{make_service_fn, service_fn, Service};
-use hyper::{Body, Request, Response, Server};
+use serde_json;
+use hyper::server::conn::AddrStream;
+use hyper::service::{make_service_fn, service_fn};
+use hyper::{Body, Error, Request, Response, Server, Method, StatusCode};
+use hyper::header::HeaderValue;
 use prometheus::{
     self, exponential_buckets, register_histogram_vec, register_int_counter, Encoder, HistogramVec,
     IntCounter, TextEncoder,
@@ -34,7 +33,7 @@ mod server;
 lazy_static! {
     static ref RRDNS_QUERY_COUNTER: IntCounter =
         register_int_counter!("rrdns_query_count", "number of queries").unwrap();
-    static ref RRDNS_RESOLUTION_FAILURE: IntCounter = 
+    static ref RRDNS_RESOLUTION_FAILURE: IntCounter =
         register_int_counter!("rrdns_resolution_failure", "Number of failed resolutions.").unwrap();
     static ref RRDNS_RESOLUTION_DURATION: HistogramVec = register_histogram_vec!(
         "rrdns_resolution_duration",
@@ -134,23 +133,47 @@ async fn main() {
         }
     });
 
-    /*
     let debug_handler = handler.clone();
-    let debug_server_handler = tokio::spawn(async move {
+    tokio::spawn(async move {
         let debug_addr = SocketAddr::from(([0, 0, 0, 0], 7777));
-        let make_svc = make_service_fn(|_conn| async {
-            // debug_handler.clone_cache();
-            Ok::<_, Infallible>(service_fn(|_: Request<Body>| async move {
-                debug_handler.clone_cache();
-                Ok::<_, Infallible>(Response::new(Body::from("caching")))
-            }))
+
+        let make_svc = make_service_fn(|_socket: &AddrStream| {
+            let debug_handler = debug_handler.clone();
+
+            async move {
+                Ok::<_, Error>(service_fn(move |req| {
+                    let cache = debug_handler.clone_cache();
+
+                    let jsoned_cache = serde_json::to_string(&cache).unwrap();
+                    let mut response = Response::new(Body::empty());
+
+                    async move {
+
+                        match (req.method(), req.uri().path()) {
+                            (&Method::GET, "/debug/cache") => {
+                                *response.body_mut() = Body::from(format!("{}", jsoned_cache));
+                                response.headers_mut().insert("Content-type", HeaderValue::from_static("application/json"));
+                            },
+                            _ => {
+                                *response.status_mut() = StatusCode::NOT_FOUND
+                            }
+                        };
+
+                        Ok::<_, Error>(response)
+
+                    }
+                }))
+            }
         });
+
         let server = Server::bind(&debug_addr).serve(make_svc);
+
+        info!("debug server listening on {}", debug_addr);
+
         if let Err(e) = server.await {
-            eprintln!("server error: {}", e);
+            error!("server error: {}", e);
         }
     });
-    */
 
     let addr = listen_addr.parse::<SocketAddr>().unwrap();
     let socket = tokio::net::UdpSocket::bind(addr).await.unwrap();
@@ -164,7 +187,9 @@ async fn main() {
         let mut buf = [0; 1024];
         while let Ok((bytes_read_count, peer)) = socket_rx.recv_from(&mut buf).await {
             debug!("bytes read count: {}", bytes_read_count);
-            RRDNS_QUERY_SIZE.with_label_values(&["querysize"]).observe(bytes_read_count as f64);
+            RRDNS_QUERY_SIZE
+                .with_label_values(&["querysize"])
+                .observe(bytes_read_count as f64);
             let mut dst_buf = vec![0; bytes_read_count];
             dst_buf[..].copy_from_slice(&mut buf[..bytes_read_count]);
             tokio::spawn(process(dst_buf, peer, handler.clone(), response_tx.clone()));
@@ -180,29 +205,31 @@ async fn main() {
                     let raw_response = response.serialize();
                     let written_bytes = socket_tx.send_to(&raw_response, &peer).await.unwrap();
                     let latency = start_instant.elapsed();
-                    RRDNS_RESOLUTION_DURATION.with_label_values(&["resolveit"]).observe(latency.as_secs_f64());
-                    RRDNS_QUERY_RESPONSE_SIZE.with_label_values(&["queryresponsesize"]).observe(raw_response.len() as f64);
+                    RRDNS_RESOLUTION_DURATION
+                        .with_label_values(&["resolveit"])
+                        .observe(latency.as_secs_f64());
+                    RRDNS_QUERY_RESPONSE_SIZE
+                        .with_label_values(&["queryresponsesize"])
+                        .observe(raw_response.len() as f64);
                     debug!(
                         "{} written_bytes={} latency={:?}",
-                        response.query.header.id, written_bytes, 
-                        latency
+                        response.query.header.id, written_bytes, latency
                     );
                 }
                 Err(FetchError::NetworkError(err)) => {
                     // What to do?
                     RRDNS_RESOLUTION_FAILURE.inc();
                     error!("ISE::NetworkError={}", err);
-                },
+                }
                 Err(FetchError::InfiniteRecursionError(err)) => {
                     // Not sending any response back for now.
                     RRDNS_RESOLUTION_FAILURE.inc();
                     error!("terminal err={}", err)
-                },
+                }
                 Err(FetchError::NoIPError(err)) => {
                     RRDNS_RESOLUTION_FAILURE.inc();
                     error!("no ip error={}", err);
-                },
-
+                }
             }
         }
     });
@@ -221,5 +248,8 @@ async fn process(
     let start = Instant::now();
     RRDNS_QUERY_COUNTER.inc();
     let response_result = handler.handle(&buf).await;
-    response_tx.send((response_result, peer, start)).await.unwrap();
+    response_tx
+        .send((response_result, peer, start))
+        .await
+        .unwrap();
 }

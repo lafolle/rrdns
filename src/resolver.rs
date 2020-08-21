@@ -16,7 +16,7 @@ use crate::error::FetchError;
 use crate::reactor::cmd::ReactorQuery;
 use crate::reactor::Reactor;
 use async_recursion::async_recursion;
-use cache::{CRRSet, Cache, InMemoryCache};
+use cache::{CRRSet, Cache, InMemoryCache, Store};
 use tokio::sync::mpsc::Sender;
 
 mod zone;
@@ -75,8 +75,8 @@ impl Resolver {
                             match self.resolve(&query).await {
                                 Ok(mut cname_result) => cnames.append(&mut cname_result.answers),
                                 Err(err) => error!(
-                                    "resolving cname result for domain={} err={:?}",
-                                    cname, err
+                                    "resolving cname result for domain={} err={:?} dig={}",
+                                    cname, err, query.to_dig()
                                 ),
                             };
                         },
@@ -313,8 +313,8 @@ impl Resolver {
         }
 
         Err(FetchError::NoIPError(format!(
-            "{} no ip for name servers in cache",
-            query.header.id
+            "{} no ip for name servers in cache dig={}",
+            query.header.id, query.to_dig()
         )))
     }
 
@@ -386,7 +386,7 @@ impl Resolver {
         );
     }
 
-    pub fn clone_cache(&self) -> HashMap<String, HashMap<QType, CRRSet>> {
+    pub fn clone_cache(&self) -> Store {
         let cache = self.cache.lock().unwrap();
         cache.clone_cache()
     }
