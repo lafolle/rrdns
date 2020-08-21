@@ -1,6 +1,6 @@
 use crate::business::models::{DNSQueryResponse, ResponseCode};
 use crate::error::FetchError;
-use log::{error, info};
+use log::{debug, error, info};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use tokio::net::UdpSocket;
@@ -21,19 +21,24 @@ impl Reactor {
         let reactor = Reactor { addr, rx };
 
         tokio::spawn(reactor.run());
+        debug!("new reactor created/spawned");
 
         tx
     }
 
     pub async fn run(mut self) {
-        let addr = SocketAddr::new(IpAddr::V4(self.addr.parse::<Ipv4Addr>().unwrap()), 34255);
-        let mut socket = UdpSocket::bind(addr)
-            .await
-            .expect(format!("reactor: could not bind to address {}", addr).as_str());
+        let addr = SocketAddr::new(IpAddr::V4(self.addr.parse::<Ipv4Addr>().unwrap()), 34256);
+        let mut socket = match UdpSocket::bind(addr).await {
+            Ok(socket) => socket,
+            Err(err) => {
+                error!("could not bind the reactor to {} because of {}", addr, err);
+                std::process::exit(1)
+            }
+        };
 
         let mut registry = HashMap::new();
 
-        info!("Reactor is binded on address {}", addr);
+        info!("Reactor is binded to address {}", addr);
         loop {
             let mut read_buf = [0 as u8; 1024];
 

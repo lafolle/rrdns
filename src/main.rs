@@ -131,7 +131,7 @@ async fn metrics_service(_req: Request<Body>) -> Result<Response<Body>, Infallib
 struct RRDNSServer {
     listen_addr: SocketAddr,
     listen_debug_addr: SocketAddr,
-    listen_metrics: SocketAddr 
+    listen_metrics: SocketAddr,
 }
 
 #[tokio::main]
@@ -157,7 +157,10 @@ async fn main() {
         let make_svc =
             make_service_fn(|_conn| async { Ok::<_, Infallible>(service_fn(metrics_service)) });
         let server = Server::bind(&prometheus_exposition_addr).serve(make_svc);
-        info!("Metrics (prometheus) server binded to {}", listen_metrics_addr);
+        info!(
+            "Metrics (prometheus) server binded to {}",
+            listen_metrics_addr
+        );
         if let Err(e) = server.await {
             error!("prometheus: error={}", e);
         }

@@ -48,13 +48,13 @@ impl Handler {
                         // BUG: Client needs to be told about ISE.  How???  Does the RFC say
                         // anyghing about it?
                         return Err(FetchError::NetworkError(err));
-                    },
+                    }
                     FetchError::InfiniteRecursionError(err) => {
                         return Err(FetchError::InfiniteRecursionError(err));
-                    },
+                    }
                     FetchError::NoIPError(err) => {
                         return Err(FetchError::NoIPError(err));
-                    },
+                    }
                 }
             }
         }

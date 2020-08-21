@@ -19,7 +19,7 @@ pub fn parent_zone(zone: &str) -> String {
     if first_dot_index == zone.len() - 1 {
         return ".".to_string();
     }
-    zone[first_dot_index+1..].to_string()
+    zone[first_dot_index + 1..].to_string()
 }
 
 #[cfg(test)]

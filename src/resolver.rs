@@ -3,9 +3,8 @@ use crate::business::models::{
     RRSet, ResponseCode, Type,
 };
 use itertools::{all, any};
-use log::{error, info, log_enabled, Level};
+use log::{debug, error, info, log_enabled, Level};
 use rand::prelude::*;
-use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
@@ -16,7 +15,7 @@ use crate::error::FetchError;
 use crate::reactor::cmd::ReactorQuery;
 use crate::reactor::Reactor;
 use async_recursion::async_recursion;
-use cache::{CRRSet, Cache, InMemoryCache, Store};
+use cache::{Cache, InMemoryCache, Store};
 use tokio::sync::mpsc::Sender;
 
 mod zone;
@@ -76,15 +75,17 @@ impl Resolver {
                                 Ok(mut cname_result) => cnames.append(&mut cname_result.answers),
                                 Err(err) => error!(
                                     "resolving cname result for domain={} err={:?} dig={}",
-                                    cname, err, query.to_dig()
+                                    cname,
+                                    err,
+                                    query.to_dig()
                                 ),
                             };
-                        },
+                        }
                         _ => {
                             panic!("this should never happen");
                         }
                     };
-                };
+                }
                 result.query.header.answers_count += cnames.len() as u16;
                 result.answers.append(&mut cnames);
                 result
@@ -237,45 +238,39 @@ impl Resolver {
                 vec![]
             }
         );
-        // Get A record for authority server.
-        // Sometimes only some of the records may be present in cache
+        // Get A record for authority server and make request.
+        // Sometimes only subset of ns_records' A address will be in cache
         for authority_server_record in ns_records {
             if let Type::NS(name_server) = &authority_server_record.r#type {
-                let mut A_record = None;
-                let mut AAAA_record = None;
-                {
+                let ip_records = {
                     let mut cache = self.cache.lock().unwrap();
-                    A_record = cache.get(&name_server, &QType::A);
-                    AAAA_record = cache.get(&name_server, &QType::AAAA);
-                }
-                if let Some(list_of_ipv4s) = A_record {
-                    match self.request(&query, list_of_ipv4s).await {
-                        Ok(response) => return Ok(response),
-                        Err(err) => match err {
-                            FetchError::QueryError(err) => return Err(FetchError::QueryError(err)),
-                            FetchError::NetworkError(_err) => continue,
-                            FetchError::InfiniteRecursionError(err) => {
-                                return Err(FetchError::InfiniteRecursionError(err))
-                            }
-                            FetchError::NoIPError(err) => return Err(FetchError::NoIPError(err)),
-                        },
-                    };
-                } else if let Some(list_of_ipv6s) = AAAA_record {
-                    match self.request(&query, list_of_ipv6s).await {
-                        Ok(response) => return Ok(response),
-                        Err(err) => match err {
-                            FetchError::QueryError(err) => return Err(FetchError::QueryError(err)),
-                            FetchError::NetworkError(_err) => continue,
-                            FetchError::InfiniteRecursionError(err) => {
-                                return Err(FetchError::InfiniteRecursionError(err))
-                            }
-                            FetchError::NoIPError(err) => return Err(FetchError::NoIPError(err)),
-                        },
-                    };
-                }
+                    let mut records = vec![];
+                    if let Some(ip_records) = cache.get(&name_server, &QType::A) {
+                        records = ip_records;
+                    } else if let Some(ip_records) = cache.get(&name_server, &QType::AAAA) {
+                        records = ip_records;
+                    }
+                    if records.len() == 0 {
+                        continue;
+                    }
+                    records
+                };
+                match self.request(&query, ip_records).await {
+                    Ok(response) => return Ok(response),
+                    Err(err) => match err {
+                        FetchError::QueryError(err) => return Err(FetchError::QueryError(err)),
+                        FetchError::NetworkError(_err) => continue,
+                        FetchError::InfiniteRecursionError(err) => {
+                            return Err(FetchError::InfiniteRecursionError(err))
+                        }
+                        FetchError::NoIPError(err) => return Err(FetchError::NoIPError(err)),
+                    },
+                };
+                //}
             };
         }
 
+        info!("no A/AAAA of NSs in cache, trying,  spawning query for them");
         for authority_server_record in ns_records {
             // Build query to get A/AAAA record for NS.
             if let Type::NS(name_server) = &authority_server_record.r#type {
@@ -286,12 +281,12 @@ impl Resolver {
 
                 let a_query = self.build_query(dotted_name_server.clone(), QType::A);
                 if let Ok(_) = self.resolve(&a_query).await {
-                    let mut A_record = None;
+                    let mut a_records = None;
                     {
                         let mut cache = self.cache.lock().unwrap();
-                        A_record = cache.get(&dotted_name_server, &QType::A);
+                        a_records = cache.get(&dotted_name_server, &QType::A);
                     }
-                    if let Some(ip_records) = A_record {
+                    if let Some(ip_records) = a_records {
                         match self.request(&query, ip_records).await {
                             Ok(response) => return Ok(response),
                             Err(err) => match err {
@@ -313,8 +308,10 @@ impl Resolver {
         }
 
         Err(FetchError::NoIPError(format!(
-            "{} no ip for name servers in cache dig={}",
-            query.header.id, query.to_dig()
+            "{} could not find A records dig={} {:?}",
+            query.header.id,
+            query.to_dig(),
+            ns_records
         )))
     }
 
@@ -327,10 +324,15 @@ impl Resolver {
             let socket_server_addr: SocketAddr = match rr.r#type {
                 Type::A(ip4) => SocketAddr::new(IpAddr::V4(ip4), 53),
                 Type::AAAA(ip6) => SocketAddr::new(IpAddr::V6(ip6), 53),
-                _ => panic!("This should not happen."),
+                _ => panic!(
+                    "{} request: expected A or AAAA got {}",
+                    query.header.id,
+                    rr.r#type.to_qtype()
+                ),
             };
 
             let (tx_oneshot, rx_oneshot) = oneshot::channel();
+            let mut reactor_tx = self.reactor_tx.clone();
 
             let reactor_query = ReactorQuery {
                 query: query.clone(),
@@ -338,9 +340,9 @@ impl Resolver {
                 respond_tx: tx_oneshot,
             };
 
-            let mut reactor_tx = self.reactor_tx.clone();
             match reactor_tx.send(reactor_query).await {
                 Ok(_) => {
+                    debug!("waiting for response from reactor");
                     match rx_oneshot.await {
                         Ok(reactor_response_result) => {
                             match reactor_response_result {
@@ -376,7 +378,10 @@ impl Resolver {
                         }
                     }
                 }
-                Err(err) => error!("resolver:reactor_send error={}", err),
+                Err(err) => error!(
+                    "{} unable to send to reactor error={}",
+                    query.header.id, err
+                ),
             };
         }
 

@@ -1,7 +1,7 @@
 // Server invokes handler.
 
 use crate::handler::Handler;
-use std::net::{UdpSocket, SocketAddr};
+use std::net::{SocketAddr, UdpSocket};
 
 pub struct DNSServer {
     handler: Handler,

@@ -1,10 +1,10 @@
 use crate::business::models::{Class, QType, ResourceRecord, Type};
 use log::{debug, info};
 use md5;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
-use serde::{Serialize, Deserialize};
 
 pub trait Cache {
     fn get(&mut self, domain: &str, qtype: &QType) -> Option<Vec<ResourceRecord>>;

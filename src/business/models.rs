@@ -1,10 +1,10 @@
 use itertools::interleave;
+use serde::{Deserialize, Serialize};
 use slice_as_array::{slice_as_array, slice_as_array_transmute};
 use std::cmp::Eq;
 use std::fmt;
 use std::hash::Hash;
 use std::net::{Ipv4Addr, Ipv6Addr};
-use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResponseCode {
@@ -249,21 +249,25 @@ impl QType {
 
 impl fmt::Display for QType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{:?}", match *self {
-            QType::A => "A",
-            QType::NS => "NS",
-            QType::CNAME => "CNAME",
-            QType::SOA => "SOA",
-            QType::PTR => "PTR",
-            QType::HINFO => "HINFO",
-            QType::MX => "MX",
-            QType::TXT => "TXT",
-            QType::AAAA => "AAAA",
-            QType::AXFR => "AXFR",
-            QType::MAILB => "MAILB",
-            QType::MAILA => "MAILA",
-            QType::STAR => "STAR",
-        })
+        write!(
+            f,
+            "{:?}",
+            match *self {
+                QType::A => "A",
+                QType::NS => "NS",
+                QType::CNAME => "CNAME",
+                QType::SOA => "SOA",
+                QType::PTR => "PTR",
+                QType::HINFO => "HINFO",
+                QType::MX => "MX",
+                QType::TXT => "TXT",
+                QType::AAAA => "AAAA",
+                QType::AXFR => "AXFR",
+                QType::MAILB => "MAILB",
+                QType::MAILA => "MAILA",
+                QType::STAR => "STAR",
+            }
+        )
     }
 }
 
@@ -450,12 +454,16 @@ impl DNSQueryResponse {
     }
 
     pub fn contains_cnames(&self) -> Option<Vec<&ResourceRecord>> {
-        let cname_rrs = self.answers.iter().filter(|rr| {
-            if rr.r#type.to_qtype() == QType::CNAME {
-                return true;
-            }
-            false
-        }).collect::<Vec<&ResourceRecord>>();
+        let cname_rrs = self
+            .answers
+            .iter()
+            .filter(|rr| {
+                if rr.r#type.to_qtype() == QType::CNAME {
+                    return true;
+                }
+                false
+            })
+            .collect::<Vec<&ResourceRecord>>();
         if cname_rrs.len() > 0 {
             return Some(cname_rrs);
         }
@@ -618,12 +626,9 @@ pub struct DNSQuery {
 }
 
 impl DNSQuery {
-    
     pub fn to_dig(&self) -> String {
-
         let question = &self.questions[0];
         format!("dig {} {}", question.qname, question.qtype)
-
     }
 
     pub fn serialize(&self) -> Vec<u8> {
@@ -1049,8 +1054,7 @@ mod tests {
             additional: vec![],
         };
 
-        let expected = vec![0, 1, ];
-
+        let expected = vec![0, 1];
     }
 
     #[test]
