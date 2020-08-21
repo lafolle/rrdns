@@ -1,10 +1,9 @@
 use crate::business::models::{DNSQuery, DNSQueryResponse, QType};
 use crate::error::FetchError;
-use crate::resolver::cache::{CRRSet, Store};
+use crate::resolver::cache::{Store};
 use crate::resolver::Resolver;
 use log::info;
 use rand::prelude::*;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 // Handler can be called from multiple threads.
