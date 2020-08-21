@@ -1134,8 +1134,8 @@ mod tests {
             2, 99, 97, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 200,
         ];
         let expected = SOAData {
-            rname: "lafolle.ca".to_string(),
-            mname: "lafolle.ca".to_string(),
+            rname: "lafolle.ca.".to_string(),
+            mname: "lafolle.ca.".to_string(),
             serial: 0,
             refresh_in_secs: 1,
             retry_in_secs: 2,

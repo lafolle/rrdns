@@ -173,13 +173,11 @@ impl Cache for InMemoryCache {
             .find(|crr| crr.rr.name == *domain && crr.rr.r#type.to_qtype() == qtype)
             .is_none()
         {
-            info!("no duplicate {} {}", domain, qtype);
             cached_rrs.append(&mut vec![CachedResourceRecord {
                 rr: resource_record.clone(),
                 last_refreshed_at: get_secs_since_epoch(),
             }]);
         } else {
-            info!("duplicate found {} {}", domain, qtype);
         }
     }
 
