@@ -873,7 +873,11 @@ fn read_labels(buf: &[u8], offset: usize) -> (String, usize) {
         labels.push(String::from(label));
         index += octet_length as usize + 1;
     }
-    (labels.join("."), index + 1)
+    let mut joined_labels = labels.join(".");
+    if joined_labels.len() > 1 && !joined_labels.ends_with(".") {
+        joined_labels.push('.');
+    }
+    (joined_labels, index + 1)
 }
 fn get_response_code(buf: &[u8]) -> ResponseCode {
     let index_in_buf: usize = 28 / 8;

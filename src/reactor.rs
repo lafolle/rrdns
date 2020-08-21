@@ -26,7 +26,7 @@ impl Reactor {
     }
 
     pub async fn run(mut self) {
-        let addr = SocketAddr::new(IpAddr::V4(self.addr.parse::<Ipv4Addr>().unwrap()), 34254);
+        let addr = SocketAddr::new(IpAddr::V4(self.addr.parse::<Ipv4Addr>().unwrap()), 34255);
         let mut socket = UdpSocket::bind(addr)
             .await
             .expect(format!("reactor: could not bind to address {}", addr).as_str());
