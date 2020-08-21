@@ -1,10 +1,19 @@
 // Baby steps
 use crate::business::models::DNSQueryResponse;
 use crate::handler::Handler;
-use clap::{App, Arg};
+use clap::{App, Arg, ArgMatches};
 use error::FetchError;
+use hyper::header::HeaderValue;
+use hyper::server::conn::AddrStream;
+use hyper::service::{make_service_fn, service_fn};
+use hyper::{Body, Error, Method, Request, Response, Server, StatusCode};
 use lazy_static::lazy_static;
 use log::{debug, error, info};
+use prometheus::{
+    self, exponential_buckets, register_histogram_vec, register_int_counter, Encoder, HistogramVec,
+    IntCounter, TextEncoder,
+};
+use serde_json;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::ops::Deref;
@@ -13,15 +22,6 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio;
 use tokio::sync::mpsc;
-use serde_json;
-use hyper::server::conn::AddrStream;
-use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, Error, Request, Response, Server, Method, StatusCode};
-use hyper::header::HeaderValue;
-use prometheus::{
-    self, exponential_buckets, register_histogram_vec, register_int_counter, Encoder, HistogramVec,
-    IntCounter, TextEncoder,
-};
 
 mod business;
 mod error;
@@ -58,7 +58,7 @@ lazy_static! {
     .unwrap();
 }
 
-fn init() -> String {
+fn init<'a>() -> ArgMatches<'a> {
     // Initialize the logger.
     env_logger::init();
 
@@ -91,17 +91,28 @@ fn init() -> String {
         .about("Recursive DNS resolver in Rust")
         .arg(
             Arg::with_name("listen")
-                .short("l")
+                // .short("l")
                 .long("listen")
                 .takes_value(true)
                 .help("Server will listen for DNS queries on this address"),
         )
+        .arg(
+            Arg::with_name("listen_debug")
+                // .short("ld")
+                .long("listen_debug")
+                .takes_value(true)
+                .help("Debug server will listen for debug queries on this address"),
+        )
+        .arg(
+            Arg::with_name("listen_metrics")
+                // .short("lm")
+                .long("listen_metrics")
+                .takes_value(true)
+                .help("Prometheus metrics will be exposed on this address"),
+        )
         .get_matches();
 
     matches
-        .value_of("listen")
-        .unwrap_or("127.0.0.1:8888")
-        .to_string()
 }
 
 async fn metrics_service(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
@@ -117,17 +128,36 @@ async fn metrics_service(_req: Request<Body>) -> Result<Response<Body>, Infallib
         .unwrap())
 }
 
+struct RRDNSServer {
+    listen_addr: SocketAddr,
+    listen_debug_addr: SocketAddr,
+    listen_metrics: SocketAddr 
+}
+
 #[tokio::main]
 async fn main() {
-    let listen_addr = init();
+    let matches = init();
+    let listen_addr = matches
+        .value_of("listen")
+        .unwrap_or("127.0.0.1:8888")
+        .to_string();
+    let listen_debug_addr = matches
+        .value_of("listen_debug")
+        .unwrap_or("127.0.0.1:7777")
+        .to_string();
+    let listen_metrics_addr = matches
+        .value_of("listen_metrics")
+        .unwrap_or("127.0.0.1:9999")
+        .to_string();
 
     let handler = Arc::new(Handler::new());
 
-    tokio::spawn(async {
-        let prometheus_exposition = SocketAddr::from(([127, 0, 0, 1], 9000));
+    tokio::spawn(async move {
+        let prometheus_exposition_addr = listen_metrics_addr.parse::<SocketAddr>().unwrap();
         let make_svc =
             make_service_fn(|_conn| async { Ok::<_, Infallible>(service_fn(metrics_service)) });
-        let server = Server::bind(&prometheus_exposition).serve(make_svc);
+        let server = Server::bind(&prometheus_exposition_addr).serve(make_svc);
+        info!("Metrics (prometheus) server binded to {}", listen_metrics_addr);
         if let Err(e) = server.await {
             error!("prometheus: error={}", e);
         }
@@ -135,7 +165,7 @@ async fn main() {
 
     let debug_handler = handler.clone();
     tokio::spawn(async move {
-        let debug_addr = SocketAddr::from(([0, 0, 0, 0], 7777));
+        let debug_addr = listen_debug_addr.parse::<SocketAddr>().unwrap();
 
         let make_svc = make_service_fn(|_socket: &AddrStream| {
             let debug_handler = debug_handler.clone();
@@ -148,19 +178,18 @@ async fn main() {
                     let mut response = Response::new(Body::empty());
 
                     async move {
-
                         match (req.method(), req.uri().path()) {
                             (&Method::GET, "/debug/cache") => {
-                                *response.body_mut() = Body::from(format!("{}", jsoned_cache));
-                                response.headers_mut().insert("Content-type", HeaderValue::from_static("application/json"));
-                            },
-                            _ => {
-                                *response.status_mut() = StatusCode::NOT_FOUND
+                                *response.body_mut() = Body::from(jsoned_cache);
+                                response.headers_mut().insert(
+                                    "Content-type",
+                                    HeaderValue::from_static("application/json"),
+                                );
                             }
+                            _ => *response.status_mut() = StatusCode::NOT_FOUND,
                         };
 
                         Ok::<_, Error>(response)
-
                     }
                 }))
             }
@@ -168,7 +197,7 @@ async fn main() {
 
         let server = Server::bind(&debug_addr).serve(make_svc);
 
-        info!("debug server listening on {}", debug_addr);
+        info!("Debug server binded to {}", debug_addr);
 
         if let Err(e) = server.await {
             error!("server error: {}", e);
