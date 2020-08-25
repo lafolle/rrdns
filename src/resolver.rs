@@ -244,17 +244,17 @@ impl Resolver {
             if let Type::NS(name_server) = &authority_server_record.r#type {
                 let ip_records = {
                     let mut cache = self.cache.lock().unwrap();
-                    let mut records = vec![];
-                    if let Some(ip_records) = cache.get(&name_server, &QType::A) {
-                        records = ip_records;
-                    } else if let Some(ip_records) = cache.get(&name_server, &QType::AAAA) {
-                        records = ip_records;
+                    if let Some(ip4s) = cache.get(&name_server, &QType::A) {
+                        ip4s
+                    } else if let Some(ip6s) = cache.get(&name_server, &QType::AAAA) {
+                        ip6s
+                    } else {
+                        vec![]
                     }
-                    if records.len() == 0 {
-                        continue;
-                    }
-                    records
                 };
+                if ip_records.len() == 0 {
+                    continue;
+                }
                 match self.request(&query, ip_records).await {
                     Ok(response) => return Ok(response),
                     Err(err) => match err {
@@ -270,21 +270,16 @@ impl Resolver {
             };
         }
 
-        info!("no A/AAAA of NSs in cache, trying,  spawning query for them");
+        info!("no A/AAAA of NSs in cache, trying spawning query for them");
         for authority_server_record in ns_records {
             // Build query to get A/AAAA record for NS.
             if let Type::NS(name_server) = &authority_server_record.r#type {
-                let mut dotted_name_server = name_server.clone();
-                if !name_server.ends_with(".") {
-                    dotted_name_server.push('.');
-                }
-
-                let a_query = self.build_query(dotted_name_server.clone(), QType::A);
+                let a_query = self.build_query(name_server.clone(), QType::A);
                 if let Ok(_) = self.resolve(&a_query).await {
-                    let mut a_records = None;
+                    let a_records;
                     {
                         let mut cache = self.cache.lock().unwrap();
-                        a_records = cache.get(&dotted_name_server, &QType::A);
+                        a_records = cache.get(&name_server, &QType::A);
                     }
                     if let Some(ip_records) = a_records {
                         match self.request(&query, ip_records).await {
@@ -342,7 +337,6 @@ impl Resolver {
 
             match reactor_tx.send(reactor_query).await {
                 Ok(_) => {
-                    debug!("waiting for response from reactor");
                     match rx_oneshot.await {
                         Ok(reactor_response_result) => {
                             match reactor_response_result {
