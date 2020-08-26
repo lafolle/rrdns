@@ -10,8 +10,8 @@ use hyper::{Body, Error, Method, Request, Response, Server, StatusCode};
 use lazy_static::lazy_static;
 use log::{debug, error, info};
 use prometheus::{
-    self, exponential_buckets, register_histogram_vec, register_int_counter, Encoder, HistogramVec,
-    IntCounter, TextEncoder,
+    self, exponential_buckets, register_histogram_vec, register_int_counter, register_int_gauge,
+    Encoder, HistogramVec, IntCounter, IntGauge, TextEncoder,
 };
 use serde_json;
 use std::convert::Infallible;
@@ -56,6 +56,8 @@ lazy_static! {
         exponential_buckets(0.005, 2.0, 10).unwrap()
     )
     .unwrap();
+    static ref RRDNS_PENDING_QUERIES_GAUGE: IntGauge =
+        register_int_gauge!("rrdns_pending_queries_gauge", "Number of pending queries").unwrap();
 }
 
 fn init<'a>() -> ArgMatches<'a> {
@@ -219,9 +221,12 @@ async fn main() {
         let mut buf = [0; 1024];
         while let Ok((bytes_read_count, peer)) = socket_rx.recv_from(&mut buf).await {
             debug!("bytes read count: {}", bytes_read_count);
+
             RRDNS_QUERY_SIZE
                 .with_label_values(&["querysize"])
                 .observe(bytes_read_count as f64);
+            RRDNS_PENDING_QUERIES_GAUGE.inc();
+
             let mut dst_buf = vec![0; bytes_read_count];
             dst_buf[..].copy_from_slice(&mut buf[..bytes_read_count]);
             tokio::spawn(process(dst_buf, peer, handler.clone(), response_tx.clone()));
@@ -263,6 +268,7 @@ async fn main() {
                     error!("no ip error={}", err);
                 }
             }
+            RRDNS_PENDING_QUERIES_GAUGE.dec();
         }
     });
 
